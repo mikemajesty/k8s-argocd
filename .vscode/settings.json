@@ -1,0 +1,10 @@
+{
+    "terminal.integrated.profiles.osx": {
+        "zsh": {
+            "path": "zsh",
+            "args": ["-c", "export KUBECONFIG=~/.kube/config-minikube && zsh"],
+            "icon": "terminal-bash"
+        }
+    },
+    "terminal.integrated.defaultProfile.osx": "zsh"
+}
