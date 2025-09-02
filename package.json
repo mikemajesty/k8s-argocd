@@ -1,0 +1,15 @@
+{
+  "name": "argocd",
+  "version": "1.0.0",
+  "main": "apps/cat/src/app.js",
+  "scripts": {
+    "start": "node apps/cat/src/app.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0"
+  }
+}
