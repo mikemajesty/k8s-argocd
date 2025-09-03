@@ -2,9 +2,20 @@ require('dotenv').config();
 const express = require('express');
 const app = express();
 const port = process.env.PORT;
+const morgan = require('morgan');
+const os = require('os');
+app.use(morgan('dev'));
 
 app.get('/details', (req, res) => {
-  res.send('Hello World!');
+  res.send({
+    message: 'This is the details endpoint!',
+    nodeVersion: process.version,
+    hostname: os.hostname(),
+    platform: process.platform,
+    requestMethod: req.method,
+    requestUrl: req.originalUrl,
+    timestamp: new Date().toISOString()
+  });
 });
 
 app.get('/healthz', (req, res) => {
