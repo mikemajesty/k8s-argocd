@@ -7,7 +7,7 @@
         },
         "helm-terminal": {
             "path": "zsh",
-            "args": ["-c", "export PATH=\"$PWD/helm-charts/bin:$PATH\" && zsh"],
+            "args": ["-c", "export KUBECONFIG=~/.kube/config-kind && export PATH=\"$PWD/helm-charts/bin:$PATH\" && zsh"],
             "icon": "terminal-bash"
         }
     },
