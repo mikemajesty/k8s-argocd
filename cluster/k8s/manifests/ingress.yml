@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cat-app-ingress
+  annotations:
+    # Esta anotação redireciona o tráfego HTTP para HTTPS. Remova se não precisar.
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+
+    # Esta anotação é útil se sua aplicação não tem um sub-caminho.
+    # Ex: de 'meu-site.com/app' para 'meu-site.com/'.
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: cat-app.localhost
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: cat-app-service
+            port:
+              number: 80

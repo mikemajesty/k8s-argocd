@@ -24,5 +24,6 @@ docker-stop:
 	docker stop cat-app
 
 docker-deploy:
-	@echo "Deploying the Docker container to Minikube..."
-	minikube image load cat-app:latest
+	@echo "Creating Docker image..."
+	docker tag cat-app:latest mikelima1989/cat-app:latest
+	docker push mikelima1989/cat-app:latest

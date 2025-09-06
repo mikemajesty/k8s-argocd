@@ -1,10 +1,15 @@
 {
     "terminal.integrated.profiles.osx": {
-        "zsh": {
+        "kind-terminal": {
             "path": "zsh",
-            "args": ["-c", "export KUBECONFIG=~/.kube/config-minikube && zsh"],
+            "args": ["-c", "export KUBECONFIG=~/.kube/config-kind && export PATH=\"$PWD/cluster/kind/bin:$PATH\" && zsh"],
+            "icon": "terminal-bash"
+        },
+        "helm-terminal": {
+            "path": "zsh",
+            "args": ["-c", "export PATH=\"$PWD/helm-charts/bin:$PATH\" && zsh"],
             "icon": "terminal-bash"
         }
     },
-    "terminal.integrated.defaultProfile.osx": "zsh"
+    "terminal.integrated.defaultProfile.osx": "helm-terminal"
 }

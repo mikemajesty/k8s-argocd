@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cat-app
+  labels:
+    app: cat-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cat-app
+  template:
+    metadata:
+      labels:
+        app: cat-app
+    spec:
+      containers:
+      - name: cat-app
+        image: "mikelima1989/cat-app:latest"
+        ports:
+        - containerPort: 3000
