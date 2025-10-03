@@ -4,7 +4,7 @@
 # Variáveis
 HELM_VERSION ?= v3.13.1
 ARGOCD_VERSION ?= v2.9.7
-BIN_DIR ?= ../.bin
+BIN_DIR ?= ../bin
 ARGOCD_HELM_REPO ?= https://argoproj.github.io/argo-helm
 ARGOCD_RELEASE_NAME ?= argo-cd
 ARGOCD_NAMESPACE ?= argocd

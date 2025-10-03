@@ -2,7 +2,7 @@
 
 KIND_VERSION ?= v0.20.0
 KIND_CLUSTER_NAME ?= argocd
-BIN_DIR ?= ../../.bin
+BIN_DIR ?= ../../bin
 
 # ==============================================================================
 # Dependências e Verificações
