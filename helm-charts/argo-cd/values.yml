@@ -1,0 +1,30 @@
+redis-ha:
+  enabled: false
+  cluster:
+    enabled: false
+
+controller:
+  replicas: 1
+
+global:
+  domain: argocd.app.io
+
+server:
+  extraArgs:
+    - --insecure
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hosts:
+      - argocd.app.io
+    annotations:
+      nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+      # nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    tls:
+      - hosts:
+          - argocd.app.io
+        secretName: argocd-server-tls
+
+repoServer:
+  replicas: 1
