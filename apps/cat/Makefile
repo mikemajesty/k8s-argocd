@@ -1,7 +1,3 @@
-minikube:
-	@echo "Starting the application..."
-	minikube start
-
 start: kill-port-3000
 	@echo "Starting the application..."
 	@node apps/cat/src/app.js
