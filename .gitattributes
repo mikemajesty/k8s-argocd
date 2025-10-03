@@ -1,0 +1,1 @@
+.bin/argocd filter=lfs diff=lfs merge=lfs -text
