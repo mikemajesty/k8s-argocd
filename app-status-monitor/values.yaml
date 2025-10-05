@@ -1,0 +1,27 @@
+# values.yaml
+image:
+  repository: mikelima1989/app-status-monitor
+  tag: latest
+  pullPolicy: IfNotPresent
+
+namespace: argocd
+
+config:
+  watchInterval: 30s
+  applications:
+    - appName: "cat-app"
+      namespace: "cat-app"
+      webhookUrl: "https://webhook.site/e7df2d9b-7488-4bbc-bfdc-c1d5cb60485f"
+      criticalOnly: false
+    - appName: "meu-app"
+      namespace: "default"
+      webhookUrl: ""
+      criticalOnly: true
+
+resources:
+  requests:
+    memory: "64Mi"
+    cpu: "50m"
+  limits:
+    memory: "128Mi"
+    cpu: "100m"

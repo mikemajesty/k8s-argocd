@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "app-status-monitor.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "app-status-monitor.labels" . | nindent 4 }}
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "app-status-monitor.fullname" . }}
+  labels:
+    {{- include "app-status-monitor.labels" . | nindent 4 }}
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "app-status-monitor.fullname" . }}
+  labels:
+    {{- include "app-status-monitor.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "app-status-monitor.fullname" . }}
+subjects:
+- kind: ServiceAccount
+  name: {{ include "app-status-monitor.fullname" . }}
+  namespace: {{ .Values.namespace }}

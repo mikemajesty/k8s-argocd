@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "app-status-monitor.fullname" . }}-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "app-status-monitor.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    watchInterval: {{ .Values.config.watchInterval }}
+    applications:
+    {{- range .Values.config.applications }}
+      - appName: {{ .appName | quote }}
+        namespace: {{ .namespace | quote }}
+        webhookUrl: {{ .webhookUrl | quote }}
+        criticalOnly: {{ .criticalOnly }}
+    {{- end }}
