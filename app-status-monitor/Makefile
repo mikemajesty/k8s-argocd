@@ -5,7 +5,7 @@ NAMESPACE = argocd
 DEPLOYMENT_NAME = status-monitor-app-status-monitor
 ARGO_APP_NAME = app-status-monitor
 ARGO_SERVER = argocd.app.io  # Ajuste conforme seu ambiente
-ARGO_CD_CLI = ../bin/argocd  # ← CAMINHO CORRETO para seu binário
+ARGO_CD_CLI := $(CURDIR)/../bin/argocd
 
 # Build e push da imagem Docker
 deploy-docker:
