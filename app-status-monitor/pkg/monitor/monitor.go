@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"meu-monitor/pkg/config"
@@ -31,6 +32,16 @@ type WebhookMessage struct {
 	Message     string    `json:"message"`
 	Timestamp   time.Time `json:"timestamp"`
 	Critical    bool      `json:"critical"`
+}
+
+// ✅ HTTP Client compartilhado e otimizado
+var httpClient = &http.Client{
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 20,
+		IdleConnTimeout:     90 * time.Second,
+	},
 }
 
 func NewApplicationMonitor(config *config.AppConfig) (*ApplicationMonitor, error) {
@@ -74,14 +85,27 @@ func (m *ApplicationMonitor) Start(ctx context.Context) error {
 }
 
 func (m *ApplicationMonitor) checkAllApplications() {
-	log.Printf("🔍 Starting application checks at %v", time.Now().Format(time.RFC3339))
+	startTime := time.Now()
+	log.Printf("🔍 Starting application checks at %v", startTime.Format(time.RFC3339))
+
+	// ✅ NOVO: Goroutines para verificações paralelas
+	var wg sync.WaitGroup
 
 	for _, app := range m.config.Applications {
-		log.Printf("📋 Checking application: %s in namespace: %s", app.Name, app.Namespace)
-		m.checkApplication(app)
+		wg.Add(1)
+		go func(app config.Application) {
+			defer wg.Done()
+			log.Printf("📋 Checking application: %s in namespace: %s", app.Name, app.Namespace)
+			m.checkApplication(app)
+		}(app)
 	}
 
-	log.Printf("✅ Completed application checks at %v", time.Now().Format(time.RFC3339))
+	// Aguarda todas as goroutines terminarem
+	wg.Wait()
+
+	duration := time.Since(startTime)
+	log.Printf("✅ Completed %d application checks in %v at %v",
+		len(m.config.Applications), duration, time.Now().Format(time.RFC3339))
 }
 
 func (m *ApplicationMonitor) checkApplication(app config.Application) {
@@ -238,7 +262,8 @@ func (m *ApplicationMonitor) sendWebhook(app config.Application, status, message
 		return
 	}
 
-	resp, err := http.Post(app.WebhookURL, "application/json", strings.NewReader(string(payload)))
+	// ✅ USA HTTP Client otimizado
+	resp, err := httpClient.Post(app.WebhookURL, "application/json", strings.NewReader(string(payload)))
 	if err != nil {
 		log.Printf("❌ Failed to send webhook for %s: %v", app.Name, err)
 		return
