@@ -1,4 +1,3 @@
-// pkg/monitor/monitor.go
 package monitor
 
 import (
@@ -20,8 +19,9 @@ import (
 )
 
 type ApplicationMonitor struct {
-	config    *config.AppConfig
-	clientset *kubernetes.Clientset
+	config     *config.AppConfig
+	clientset  *kubernetes.Clientset
+	lastStatus map[string]string // app+namespace -> último status
 }
 
 type WebhookMessage struct {
@@ -46,8 +46,9 @@ func NewApplicationMonitor(config *config.AppConfig) (*ApplicationMonitor, error
 	}
 
 	return &ApplicationMonitor{
-		config:    config,
-		clientset: clientset,
+		config:     config,
+		clientset:  clientset,
+		lastStatus: make(map[string]string),
 	}, nil
 }
 
@@ -91,15 +92,34 @@ func (m *ApplicationMonitor) checkApplication(app config.Application) {
 			app.Name, app.Namespace, err)
 		log.Println(message)
 
-		// ✅ CORREÇÃO: SEMPRE enviar webhook quando deployment não existe
-		// (consideramos que um app que não existe é CRÍTICO)
-		m.sendWebhook(app, "ERROR", message, true)
+		// ✅ SEMPRE enviar webhook quando deployment não existe (CRÍTICO)
+		m.maybeSendWebhook(app, "ERROR", message, true)
 		return
 	}
 
 	status := m.analyzeDeployment(deployment, app)
-	if status.ShouldSendWebhook(app.CriticalOnly) {
-		m.sendWebhook(app, status.Level, status.Message, status.Critical)
+	m.maybeSendWebhook(app, status.Level, status.Message, status.Critical)
+}
+
+// ✅ NOVA FUNÇÃO: Só envia webhook se o status mudou
+func (m *ApplicationMonitor) maybeSendWebhook(app config.Application, level, message string, critical bool) {
+	key := app.Name + "/" + app.Namespace
+	currentStatus := level + ":" + message
+
+	// ✅ Lógica inteligente:
+	// - SEMPRE envia se for CRÍTICO
+	// - Envia apenas se mudou para status não-crítico
+	if critical || m.lastStatus[key] != currentStatus {
+		m.sendWebhook(app, level, message, critical)
+		m.lastStatus[key] = currentStatus
+
+		if critical {
+			log.Printf("🚨 CRITICAL status for %s: %s", key, level)
+		} else {
+			log.Printf("📤 Status CHANGED for %s: %s", key, level)
+		}
+	} else {
+		log.Printf("🔁 Status UNCHANGED for %s: %s", key, level)
 	}
 }
 
