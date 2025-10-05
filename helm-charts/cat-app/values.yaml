@@ -7,7 +7,7 @@ replicaCount: 1
 image:
   repository: mikelima1989/cat-app
   pullPolicy: Always
-  tag: "latest"
+  tag: "v1.0.3"
 
 imagePullSecrets: []
 nameOverride: ""
