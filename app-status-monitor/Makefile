@@ -9,9 +9,9 @@ deploy-docker:
 
 # Aplicar no Kubernetes (opcional)
 deploy-k8s:
-	kubectl apply -f deployments/k8s/configmap.yaml
-	kubectl apply -f deployments/k8s/deployment.yaml
-	kubectl apply -f deployments/k8s/rbac.yaml
+	kubectl apply -f templates/configmap.yaml
+	kubectl apply -f templates/deployment.yaml
+	kubectl apply -f templates/rbac.yaml
 
 # Deploy completo
 deploy-all: deploy-docker deploy-k8s
