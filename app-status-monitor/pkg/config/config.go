@@ -1,4 +1,3 @@
-// pkg/config/config.go
 package config
 
 import (
@@ -25,23 +24,28 @@ type Application struct {
 
 // LoadConfig - carrega configuração do arquivo YAML
 func LoadConfig(path string) (*AppConfig, error) {
-	log.Printf("📁 Loading config from: %s", path) // ← ADD THIS
+	log.Printf("📁 Loading config from: %s", path)
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		log.Printf("❌ Failed to read config file: %v", err) // ← ADD THIS
+		log.Printf("❌ Failed to read config file: %v", err)
 		return nil, err
 	}
 
-	log.Printf("📄 Config file size: %d bytes", len(data)) // ← ADD THIS
+	log.Printf("📄 Config file size: %d bytes", len(data))
 
 	var config AppConfig
 	if err := yaml.Unmarshal(data, &config); err != nil {
-		log.Printf("❌ Failed to parse YAML: %v", err) // ← ADD THIS
+		log.Printf("❌ Failed to parse YAML: %v", err)
 		return nil, err
 	}
 
-	log.Printf("✅ Successfully loaded %d applications", len(config.Applications)) // ← ADD THIS
+	// Set default watch interval if not specified
+	if config.WatchInterval == 0 {
+		config.WatchInterval = 30 * time.Second
+	}
+
+	log.Printf("✅ Successfully loaded %d applications", len(config.Applications))
 	return &config, nil
 }
 
