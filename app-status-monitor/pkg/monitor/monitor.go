@@ -91,9 +91,9 @@ func (m *ApplicationMonitor) checkApplication(app config.Application) {
 			app.Name, app.Namespace, err)
 		log.Println(message)
 
-		if !app.CriticalOnly {
-			m.sendWebhook(app, "ERROR", message, true)
-		}
+		// ✅ CORREÇÃO: SEMPRE enviar webhook quando deployment não existe
+		// (consideramos que um app que não existe é CRÍTICO)
+		m.sendWebhook(app, "ERROR", message, true)
 		return
 	}
 
