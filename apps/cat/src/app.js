@@ -4,6 +4,7 @@ const app = express();
 const port = process.env.PORT;
 const morgan = require('morgan');
 const os = require('os');
+const { exit } = require('process');
 app.use(morgan('dev'));
 
 app.get('/details', (req, res) => {
@@ -33,4 +34,5 @@ app.get('/ready', (req, res) => {
 
 app.listen(port, () => {
   console.log(`App listening at http://localhost:${port}`);
+  exit(1); // Simula erro na inicialização do app (remova esta linha para rodar normalmente
 });

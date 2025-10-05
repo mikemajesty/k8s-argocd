@@ -15,8 +15,6 @@ import (
 func main() {
 	log.Println("🚀 Starting Application Status Monitor...")
 
-	log.Fatal("❌ ERRO SIMULADO: Falha proposital para teste!")
-
 	configPath := config.GetEnv("CONFIG_PATH", "/etc/monitor/config.yaml")
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
