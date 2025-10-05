@@ -2,7 +2,7 @@
 image:
   repository: mikelima1989/app-status-monitor
   tag: latest
-  pullPolicy: IfNotPresent
+  pullPolicy: Always
 
 namespace: argocd
 
