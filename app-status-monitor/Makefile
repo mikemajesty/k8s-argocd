@@ -3,6 +3,7 @@ IMAGE_NAME = mikelima1989/app-status-monitor
 TAG = latest
 NAMESPACE = argocd
 DEPLOYMENT_NAME = status-monitor-app-status-monitor
+ARGO_APP_NAME = app-status-monitor  # Nome do Application no Argo CD
 
 # Build e push da imagem Docker
 deploy-docker:
@@ -11,57 +12,35 @@ deploy-docker:
 	docker push $(IMAGE_NAME):$(TAG)
 	@echo "✅ Docker image pushed successfully!"
 
-# Atualizar no Kubernetes (ROLLOUT RESTART)
+# Atualizar Kubernetes (para quando o Argo CD controla o Deployment)
 deploy-k8s:
-	@echo "🚀 Updating Kubernetes deployment..."
+	@echo "🚀 Triggering Kubernetes update via rollout..."
 	kubectl rollout restart deployment/$(DEPLOYMENT_NAME) -n $(NAMESPACE)
-	@echo "⏳ Waiting for rollout to complete..."
+	@echo "⏳ Waiting for rollout..."
 	kubectl rollout status deployment/$(DEPLOYMENT_NAME) -n $(NAMESPACE) --timeout=300s
-	@echo "✅ Kubernetes deployment updated successfully!"
+	@echo "✅ Kubernetes deployment updated!"
 
-# Deploy completo (Docker + Kubernetes)
+# Deploy completo (APENAS atualiza a imagem do monitor)
 deploy: deploy-docker deploy-k8s
-	@echo "🎉 Full deployment completed!"
+	@echo "🎉 Monitor image updated! Argo CD maintains the configuration."
 
-# Deploy usando Helm
-deploy-helm:
-	@echo "📦 Deploying with Helm..."
-	helm upgrade $(DEPLOYMENT_NAME) ./app-status-monitor -n $(NAMESPACE) --install
-	@echo "✅ Helm deployment completed!"
+# Sincronizar Argo CD (se você mudou os manifests/helm chart)
+sync-argo:
+	@echo "🔄 Syncing Argo CD Application..."
+	argocd app sync $(ARGO_APP_NAME)
+	argocd app wait $(ARGO_APP_NAME) --health
+	@echo "✅ Argo CD Application synced!"
 
-# Deploy completo com Helm
-deploy-full: deploy-docker deploy-helm
-	@echo "🎉 Full Helm deployment completed!"
+# Deploy completo + Argo CD sync
+deploy-full: deploy-docker deploy-k8s sync-argo
+	@echo "🎉 Full deployment with Argo CD sync completed!"
 
-# Ver status
-status:
-	@echo "📊 Checking deployment status..."
-	@echo "--- Pods ---"
-	kubectl get pods -n $(NAMESPACE) -l "app.kubernetes.io/name=app-status-monitor"
-	@echo "--- Deployment ---"
-	kubectl get deployment/$(DEPLOYMENT_NAME) -n $(NAMESPACE)
-	@echo "--- Services ---"
-	kubectl get services -n $(NAMESPACE) -l "app.kubernetes.io/name=app-status-monitor"
+# Status do Argo CD
+status-argo:
+	@echo "📊 Argo CD Application status..."
+	argocd app get $(ARGO_APP_NAME)
 
-# Ver logs
-logs:
-	@echo "📋 Showing logs..."
-	kubectl logs -f deployment/$(DEPLOYMENT_NAME) -n $(NAMESPACE)
-
-# Limpar
-clean:
-	@echo "🧹 Cleaning up..."
-	docker rmi $(IMAGE_NAME):$(TAG) || true
-	@echo "✅ Cleanup completed!"
-
-# Help
-help:
-	@echo "📖 Available commands:"
-	@echo "  make deploy-docker    - Build and push Docker image only"
-	@echo "  make deploy-k8s       - Update Kubernetes deployment (rollout restart)"
-	@echo "  make deploy           - Full deploy (Docker + K8s rollout)"
-	@echo "  make deploy-helm      - Deploy using Helm"
-	@echo "  make deploy-full      - Full deploy with Helm"
-	@echo "  make status           - Check deployment status"
-	@echo "  make logs             - Show application logs"
-	@echo "  make clean            - Clean up Docker image"
+# Status completo
+status: status-argo
+	@echo "--- Kubernetes Resources ---"
+	kubectl get pods,deployments -n $(NAMESPACE) -l "app.kubernetes.io/name=app-status-monitor"

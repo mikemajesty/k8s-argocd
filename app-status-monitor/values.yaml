@@ -13,10 +13,10 @@ config:
       namespace: "cat-app"
       webhookUrl: "https://webhook.site/e7df2d9b-7488-4bbc-bfdc-c1d5cb60485f"
       criticalOnly: false
-    - appName: "meu-app"
-      namespace: "default"
-      webhookUrl: ""
-      criticalOnly: true
+    # - appName: "meu-app"
+    #   namespace: "default"
+    #   webhookUrl: ""
+    #   criticalOnly: true
 
 resources:
   requests:
