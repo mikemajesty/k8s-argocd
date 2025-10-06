@@ -1,13 +1,4 @@
-# templates/rbac.yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: {{ include "app-status-monitor.fullname" . }}
-  namespace: {{ .Values.namespace }}
-  labels:
-    {{- include "app-status-monitor.labels" . | nindent 4 }}
-
----
+# templates/rbac.yaml (APENAS isto)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
