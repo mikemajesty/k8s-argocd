@@ -1,6 +1,6 @@
 {
   "name": "argocd",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "main": "apps/cat/src/app.js",
   "scripts": {
     "start": "node apps/cat/src/app.js",

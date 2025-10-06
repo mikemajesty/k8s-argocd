@@ -33,6 +33,5 @@ app.get('/ready', (req, res) => {
 });
 
 app.listen(port, () => {
-  exit(1); // Simula erro na inicialização do app (remova esta linha para rodar normalmente
   console.log(`App listening at http://localhost:${port}`);
 });
