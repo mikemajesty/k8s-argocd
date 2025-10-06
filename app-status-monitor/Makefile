@@ -50,6 +50,11 @@ push:
 deploy: release build_docker push_docker push_tag
 	@echo "🚀 Deploy concluído com a versão $(VERSION)!"
 
+
+get-argo-password:
+	@echo "Obtendo senha do ArgoCD..."
+	@kubectl get secret argocd-initial-admin-secret -n $(NAMESPACE) -o jsonpath="{.data.password}" | base64 --decode; echo
+
 # Help
 help:
 	@echo "📖 Available commands:"
