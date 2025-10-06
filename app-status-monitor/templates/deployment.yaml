@@ -1,3 +1,4 @@
+# templates/deployment.yaml (atualizado com todas as envs)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,7 +7,7 @@ metadata:
   labels:
     {{- include "app-status-monitor.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
       {{- include "app-status-monitor.selectorLabels" . | nindent 6 }}
@@ -14,20 +15,81 @@ spec:
     metadata:
       labels:
         {{- include "app-status-monitor.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
       serviceAccountName: {{ include "app-status-monitor.fullname" . }}
       containers:
       - name: monitor
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - containerPort: 8080
+          name: http
         volumeMounts:
         - name: config-volume
           mountPath: /etc/monitor
         env:
+        # 🔧 Configuração da Aplicação
         - name: CONFIG_PATH
           value: "/etc/monitor/config.yaml"
+        - name: PORT
+          value: "8080"
+        
+        # 📊 Logging
         - name: LOG_LEVEL
-          value: "info"
+          value: {{ .Values.logLevel | quote }}
+        - name: LOG_FORMAT
+          value: {{ .Values.logFormat | quote }}
+        
+        # ⚡️ Performance
+        - name: MAX_WORKERS
+          value: {{ .Values.performance.maxWorkers | quote }}
+        - name: HTTP_CLIENT_TIMEOUT
+          value: {{ .Values.performance.httpClientTimeout | quote }}
+        - name: WATCH_RECONNECT_INTERVAL
+          value: {{ .Values.performance.watchReconnectInterval | quote }}
+        
+        # 🕐 Timeouts Padrão
+        - name: DEFAULT_TIMEOUT_KAFKA
+          value: {{ .Values.timeouts.kafka | quote }}
+        - name: DEFAULT_TIMEOUT_DEPLOYMENT
+          value: {{ .Values.timeouts.deployment | quote }}
+        - name: DEFAULT_TIMEOUT_DATABASE
+          value: {{ .Values.timeouts.database | quote }}
+        - name: DEFAULT_TIMEOUT_REDIS
+          value: {{ .Values.timeouts.redis | quote }}
+        
+        # 🔍 Check Intervals
+        - name: CHECK_INTERVAL_KAFKA
+          value: {{ .Values.checkIntervals.kafka | quote }}
+        - name: CHECK_INTERVAL_DEPLOYMENT
+          value: {{ .Values.checkIntervals.deployment | quote }}
+        - name: CHECK_INTERVAL_DATABASE
+          value: {{ .Values.checkIntervals.database | quote }}
+        - name: CHECK_INTERVAL_REDIS
+          value: {{ .Values.checkIntervals.redis | quote }}
+        - name: CHECK_INTERVAL_DEFAULT
+          value: {{ .Values.checkIntervals.default | quote }}
+        
+        # 🔐 Segurança
+        - name: ENABLE_METRICS
+          value: {{ .Values.security.enableMetrics | quote }}
+        - name: ALLOWED_ORIGINS
+          value: {{ .Values.security.allowedOrigins | quote }}
+        
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
         resources:
           {{- toYaml .Values.resources | nindent 12 }}
       volumes:

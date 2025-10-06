@@ -8,10 +8,7 @@ metadata:
 data:
   config.yaml: |
     watchInterval: {{ .Values.config.watchInterval }}
-    applications:
-    {{- range .Values.config.applications }}
-      - appName: {{ .appName | quote }}
-        namespace: {{ .namespace | quote }}
-        webhookUrl: {{ .webhookUrl | quote }}
-        criticalOnly: {{ .criticalOnly }}
-    {{- end }}
+    
+    defaultTimeouts:
+      kafkatopic: 20m
+      deployment: 10m

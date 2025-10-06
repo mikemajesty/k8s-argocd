@@ -1,58 +1,40 @@
 package config
 
 import (
-	"log"
-	"os"
 	"time"
-
-	"gopkg.in/yaml.v2"
 )
 
-// AppConfig - estrutura principal de configuração
 type AppConfig struct {
-	WatchInterval time.Duration `yaml:"watchInterval"`
-	Applications  []Application `yaml:"applications"`
+	WatchInterval time.Duration `yaml:"watchInterval" json:"watchInterval"`
 }
 
-// Application - configuração de cada aplicação monitorada
-type Application struct {
-	Name         string `yaml:"appName"`
-	Namespace    string `yaml:"namespace"`
-	WebhookURL   string `yaml:"webhookUrl"`
-	CriticalOnly bool   `yaml:"criticalOnly"`
+type MonitorRequestGVR struct {
+	Group    string `json:"group"`
+	Version  string `json:"version"`
+	Resource string `json:"resource"`
 }
 
-// LoadConfig - carrega configuração do arquivo YAML
-func LoadConfig(path string) (*AppConfig, error) {
-	log.Printf("📁 Loading config from: %s", path)
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		log.Printf("❌ Failed to read config file: %v", err)
-		return nil, err
-	}
-
-	log.Printf("📄 Config file size: %d bytes", len(data))
-
-	var config AppConfig
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		log.Printf("❌ Failed to parse YAML: %v", err)
-		return nil, err
-	}
-
-	// Set default watch interval if not specified
-	if config.WatchInterval == 0 {
-		config.WatchInterval = 30 * time.Second
-	}
-
-	log.Printf("✅ Successfully loaded %d applications", len(config.Applications))
-	return &config, nil
+type MonitorRequest struct {
+	ID          string                 `json:"id"`
+	Type        string                 `json:"type"`
+	Name        string                 `json:"name"`
+	Namespace   string                 `json:"namespace"`
+	Timeout     time.Duration          `json:"timeout"`
+	WebhookURL  string                 `json:"webhookUrl"`
+	UserContext map[string]interface{} `json:"userContext"`
+	ClusterName string                 `json:"clusterName"`
+	GVR         MonitorRequestGVR      `json:"gvr"`
 }
 
-// GetEnv - helper para variáveis de ambiente com valor padrão
-func GetEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
+type MonitorResult struct {
+	RequestID   string                 `json:"requestId"`
+	Type        string                 `json:"type"`
+	Name        string                 `json:"name"`
+	Namespace   string                 `json:"namespace"`
+	Status      string                 `json:"status"`
+	Message     string                 `json:"message"`
+	Timestamp   time.Time              `json:"timestamp"`
+	UserContext map[string]interface{} `json:"userContext"`
+	GVR         string                 `json:"gvr,omitempty"`
+	ClusterName string                 `json:"clusterName,omitempty"`
 }

@@ -1,6 +1,17 @@
+# Chart.yaml
 apiVersion: v2
 name: app-status-monitor
-description: Kubernetes Application Status Monitor
+description: A Helm chart for Kubernetes Application Status Monitor with Watch support
 type: application
 version: 0.1.0
 appVersion: "1.0.0"
+
+dependencies: []
+
+maintainers:
+  - name: Mike Lima
+    email: mike.lima@olxbr.com
+
+annotations:
+  category: Monitoring
+  description: "Monitor application status using Kubernetes Watch API for efficient real-time monitoring"

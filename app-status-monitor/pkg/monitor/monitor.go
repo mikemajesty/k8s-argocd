@@ -12,328 +12,441 @@ import (
 
 	"meu-monitor/pkg/config"
 
-	v1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
 
+type MonitorSession struct {
+	Request    config.MonitorRequest
+	CancelFunc context.CancelFunc
+	StartTime  time.Time
+}
+
 type ApplicationMonitor struct {
-	config          *config.AppConfig
-	clientset       *kubernetes.Clientset
-	lastStatus      map[string]string // app+namespace -> último status
-	lastCheck       map[string]time.Time
-	deploymentCache map[string]*v1.Deployment
-	mutex           sync.RWMutex
+	config         *config.AppConfig
+	clusterManager *ClusterManager
+	mutex          sync.RWMutex
+	activeSessions map[string]*MonitorSession
+	resultsChan    chan config.MonitorResult
 }
 
-type WebhookMessage struct {
-	Application string    `json:"application"`
-	Namespace   string    `json:"namespace"`
-	Status      string    `json:"status"`
-	Message     string    `json:"message"`
-	Timestamp   time.Time `json:"timestamp"`
-	Critical    bool      `json:"critical"`
-}
-
-// ✅ HTTP Client otimizado
+// HTTP Client otimizado
 var httpClient = &http.Client{
-	Timeout: 5 * time.Second,
+	Timeout: 10 * time.Second,
 	Transport: &http.Transport{
-		MaxIdleConns:        50,
-		MaxIdleConnsPerHost: 10,
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 20,
 		IdleConnTimeout:     30 * time.Second,
-		ForceAttemptHTTP2:   true,
 	},
 }
 
-// ✅ Client K8s otimizado
+func NewApplicationMonitor(cfg *config.AppConfig) (*ApplicationMonitor, error) {
+	monitor := &ApplicationMonitor{
+		config:         cfg,
+		clusterManager: NewClusterManager(),
+		activeSessions: make(map[string]*MonitorSession),
+		resultsChan:    make(chan config.MonitorResult, 100),
+	}
+
+	go monitor.resultWorker()
+	return monitor, nil
+}
+
+// StartMonitoring inicia monitoramento com clusterName obrigatório
+func (m *ApplicationMonitor) StartMonitoring(ctx context.Context, req config.MonitorRequest) (string, error) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	if _, exists := m.activeSessions[req.ID]; exists {
+		return "", fmt.Errorf("monitoring session already exists for ID: %s", req.ID)
+	}
+
+	if req.ClusterName == "" {
+		return "", fmt.Errorf("clusterName is required")
+	}
+
+	timeout := req.Timeout
+	if timeout == 0 {
+		timeout = 15 * time.Minute // Default aumentado para 15min
+	}
+
+	monitorCtx, cancel := context.WithTimeout(ctx, timeout)
+
+	session := &MonitorSession{
+		Request:    req,
+		CancelFunc: cancel,
+		StartTime:  time.Now(),
+	}
+
+	m.activeSessions[req.ID] = session
+
+	// ✅ Usa Watch (mais eficiente) em vez de polling
+	go m.monitorWithWatch(monitorCtx, req)
+
+	log.Printf("🚀 Started monitoring session %s for %s %s/%s in cluster %s",
+		req.ID, req.GVR.Resource, req.Namespace, req.Name, req.ClusterName)
+
+	return req.ID, nil
+}
+
+func (m *ApplicationMonitor) StopMonitoring(sessionID string) error {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	session, exists := m.activeSessions[sessionID]
+	if !exists {
+		return fmt.Errorf("monitoring session not found: %s", sessionID)
+	}
+
+	session.CancelFunc()
+	delete(m.activeSessions, sessionID)
+
+	log.Printf("🛑 Stopped monitoring session %s", sessionID)
+	return nil
+}
+
+// ⚡️ MONITORAMENTO COM WATCH - Espera apenas por mudanças
+func (m *ApplicationMonitor) monitorWithWatch(ctx context.Context, req config.MonitorRequest) {
+	log.Printf("👀 Starting WATCH for %s %s/%s in cluster %s",
+		req.GVR.Resource, req.Namespace, req.Name, req.ClusterName)
+
+	client, err := m.clusterManager.GetClientForCluster(req.ClusterName)
+	if err != nil {
+		m.sendErrorResult(req, fmt.Sprintf("Failed to get client: %v", err))
+		return
+	}
+
+	gvr := schema.GroupVersionResource{
+		Group:    req.GVR.Group,
+		Version:  req.GVR.Version,
+		Resource: req.GVR.Resource,
+	}
+
+	// ✅ Tenta criar watcher - escuta APENAS mudanças
+	watcher, err := client.Resource(gvr).Namespace(req.Namespace).Watch(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("metadata.name=%s", req.Name),
+	})
+
+	if err != nil {
+		log.Printf("⚠️ Watch failed for %s, falling back to polling: %v", req.Name, err)
+		m.monitorWithPolling(ctx, req) // Fallback para polling
+		return
+	}
+	defer watcher.Stop()
+
+	log.Printf("📡 Watch established for %s, waiting for changes...", req.Name)
+
+	// ✅ Processa eventos do Watch
+	for {
+		select {
+		case <-ctx.Done():
+			if ctx.Err() == context.DeadlineExceeded {
+				m.sendTimeoutResult(req)
+			}
+			return
+
+		case event, ok := <-watcher.ResultChan():
+			if !ok {
+				log.Printf("🔁 Watch channel closed for %s, reconnecting...", req.Name)
+				m.monitorWithWatch(ctx, req) // Reconecta
+				return
+			}
+
+			// ✅ Processa APENAS quando há mudança real
+			switch event.Type {
+			case watch.Added, watch.Modified:
+				if obj, ok := event.Object.(*unstructured.Unstructured); ok {
+					log.Printf("🔄 Event %s received for %s", event.Type, req.Name)
+					status, message, done := m.analyzeResourceStatus(obj, req.Type)
+					if done {
+						log.Printf("✅ Resource %s reached final state: %s", req.Name, status)
+						m.sendFinalResult(req, status, message)
+						return
+					} else {
+						log.Printf("⏳ Resource %s still pending: %s", req.Name, message)
+					}
+				}
+
+			case watch.Deleted:
+				log.Printf("🗑️ Resource %s was deleted", req.Name)
+				m.sendErrorResult(req, fmt.Sprintf("Resource %s was deleted", req.Name))
+				return
+
+			case watch.Error:
+				log.Printf("⚠️ Watch error for %s, falling back to polling: %v", req.Name, event.Object)
+				m.monitorWithPolling(ctx, req)
+				return
+			}
+		}
+	}
+}
+
+// 🔁 Fallback para polling se Watch falhar
+func (m *ApplicationMonitor) monitorWithPolling(ctx context.Context, req config.MonitorRequest) {
+	log.Printf("🔄 Using POLLING for %s %s/%s", req.GVR.Resource, req.Namespace, req.Name)
+
+	checkInterval := m.getCheckInterval(req.Type)
+	ticker := time.NewTicker(checkInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			if ctx.Err() == context.DeadlineExceeded {
+				m.sendTimeoutResult(req)
+			}
+			return
+
+		case <-ticker.C:
+			result, done := m.checkResourceStatus(req)
+			if done {
+				m.resultsChan <- result
+				m.mutex.Lock()
+				delete(m.activeSessions, req.ID)
+				m.mutex.Unlock()
+				return
+			}
+		}
+	}
+}
+
+// ✅ Intervalos de check inteligentes
+func (m *ApplicationMonitor) getCheckInterval(resourceType string) time.Duration {
+	switch resourceType {
+	case "kafkatopic":
+		return 30 * time.Second // Kafka é mais lento
+	case "postgresqlinstance", "rediscluster":
+		return 45 * time.Second // Bancos são mais lentos
+	case "deployment":
+		return 15 * time.Second // Deployments são mais rápidos
+	default:
+		return 20 * time.Second // Padrão
+	}
+}
+
+func (m *ApplicationMonitor) checkResourceStatus(req config.MonitorRequest) (config.MonitorResult, bool) {
+	client, err := m.clusterManager.GetClientForCluster(req.ClusterName)
+	if err != nil {
+		return config.MonitorResult{
+			RequestID:   req.ID,
+			Type:        req.Type,
+			Name:        req.Name,
+			Namespace:   req.Namespace,
+			Status:      "ERROR",
+			Message:     fmt.Sprintf("Failed to connect to cluster %s: %v", req.ClusterName, err),
+			Timestamp:   time.Now(),
+			UserContext: req.UserContext,
+			GVR:         fmt.Sprintf("%s/%s/%s", req.GVR.Group, req.GVR.Version, req.GVR.Resource),
+			ClusterName: req.ClusterName,
+		}, true
+	}
+
+	gvr := schema.GroupVersionResource{
+		Group:    req.GVR.Group,
+		Version:  req.GVR.Version,
+		Resource: req.GVR.Resource,
+	}
+
+	obj, err := client.Resource(gvr).Namespace(req.Namespace).Get(context.TODO(), req.Name, metav1.GetOptions{})
+	if err != nil {
+		return config.MonitorResult{
+			RequestID:   req.ID,
+			Type:        req.Type,
+			Name:        req.Name,
+			Namespace:   req.Namespace,
+			Status:      "PENDING",
+			Message:     fmt.Sprintf("Resource not available in cluster %s: %v", req.ClusterName, err),
+			Timestamp:   time.Now(),
+			UserContext: req.UserContext,
+			GVR:         gvr.String(),
+			ClusterName: req.ClusterName,
+		}, false
+	}
+
+	status, message, done := m.analyzeResourceStatus(obj, req.Type)
+
+	return config.MonitorResult{
+		RequestID:   req.ID,
+		Type:        req.Type,
+		Name:        req.Name,
+		Namespace:   req.Namespace,
+		Status:      status,
+		Message:     message,
+		Timestamp:   time.Now(),
+		UserContext: req.UserContext,
+		GVR:         gvr.String(),
+		ClusterName: req.ClusterName,
+	}, done
+}
+
+// ✅ Métodos auxiliares para resultados
+func (m *ApplicationMonitor) sendFinalResult(req config.MonitorRequest, status, message string) {
+	m.resultsChan <- config.MonitorResult{
+		RequestID:   req.ID,
+		Type:        req.Type,
+		Name:        req.Name,
+		Namespace:   req.Namespace,
+		Status:      status,
+		Message:     message,
+		Timestamp:   time.Now(),
+		UserContext: req.UserContext,
+		GVR:         fmt.Sprintf("%s/%s/%s", req.GVR.Group, req.GVR.Version, req.GVR.Resource),
+		ClusterName: req.ClusterName,
+	}
+
+	m.mutex.Lock()
+	delete(m.activeSessions, req.ID)
+	m.mutex.Unlock()
+
+	log.Printf("📤 Final result sent for %s: %s", req.Name, status)
+}
+
+func (m *ApplicationMonitor) sendErrorResult(req config.MonitorRequest, message string) {
+	m.sendFinalResult(req, "ERROR", message)
+}
+
+func (m *ApplicationMonitor) sendTimeoutResult(req config.MonitorRequest) {
+	m.sendFinalResult(req, "TIMEOUT", fmt.Sprintf("Monitoring timeout after %v", req.Timeout))
+}
+
+func (m *ApplicationMonitor) analyzeResourceStatus(obj *unstructured.Unstructured, resourceType string) (string, string, bool) {
+	name := obj.GetName()
+
+	// Checker genérico para qualquer recurso (Crossplane)
+	conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if found {
+		for _, condition := range conditions {
+			if conditionMap, ok := condition.(map[string]interface{}); ok {
+				conditionType, _ := conditionMap["type"].(string)
+				status, _ := conditionMap["status"].(string)
+				reason, _ := conditionMap["reason"].(string)
+				message, _ := conditionMap["message"].(string)
+
+				if conditionType == "Ready" || conditionType == "Synced" {
+					switch status {
+					case "True":
+						return "SUCCESS", fmt.Sprintf("✅ Resource '%s' is ready and synced", name), true
+					case "False":
+						return "ERROR", fmt.Sprintf("❌ Resource '%s' failed: %s - %s", name, reason, message), true
+					case "Unknown":
+						return "PENDING", fmt.Sprintf("⏳ Resource '%s' status unknown: %s", name, message), false
+					}
+				}
+			}
+		}
+	}
+
+	// Check específico para Deployments
+	if resourceType == "deployment" {
+		return m.analyzeDeploymentStatus(obj)
+	}
+
+	// Verifica status.phase como fallback
+	if phase, found, _ := unstructured.NestedString(obj.Object, "status", "phase"); found {
+		switch phase {
+		case "Ready", "Running", "Succeeded":
+			return "SUCCESS", fmt.Sprintf("✅ Resource '%s' is ready (phase: %s)", name, phase), true
+		case "Failed", "Error":
+			return "ERROR", fmt.Sprintf("❌ Resource '%s' failed (phase: %s)", name, phase), true
+		}
+	}
+
+	return "PENDING", fmt.Sprintf("⏳ Resource '%s' is being provisioned", name), false
+}
+
+func (m *ApplicationMonitor) analyzeDeploymentStatus(obj *unstructured.Unstructured) (string, string, bool) {
+	name := obj.GetName()
+
+	availableReplicas, _, _ := unstructured.NestedInt64(obj.Object, "status", "availableReplicas")
+	replicas, foundReplicas, _ := unstructured.NestedInt64(obj.Object, "spec", "replicas")
+
+	if !foundReplicas {
+		replicas = 1
+	}
+
+	if availableReplicas >= replicas && replicas > 0 {
+		return "SUCCESS", fmt.Sprintf("✅ Deployment '%s' is ready (%d/%d replicas)", name, availableReplicas, replicas), true
+	}
+
+	// Verifica condições de falha
+	conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if found {
+		for _, condition := range conditions {
+			if conditionMap, ok := condition.(map[string]interface{}); ok {
+				conditionType, _ := conditionMap["type"].(string)
+				conditionStatus, _ := conditionMap["status"].(string)
+				reason, _ := conditionMap["reason"].(string)
+				message, _ := conditionMap["message"].(string)
+
+				if conditionType == "Progressing" && conditionStatus == "False" && reason == "ProgressDeadlineExceeded" {
+					return "ERROR", fmt.Sprintf("❌ Deployment '%s' failed: %s", name, message), true
+				}
+			}
+		}
+	}
+
+	return "PENDING", fmt.Sprintf("⏳ Deployment '%s' in progress (%d/%d replicas)", name, availableReplicas, replicas), false
+}
+
+func (m *ApplicationMonitor) resultWorker() {
+	for result := range m.resultsChan {
+		log.Printf("📦 Result for session %s: %s - %s", result.RequestID, result.Status, result.Message)
+
+		// Envia webhook se configurado
+		if result.UserContext["webhookUrl"] != nil {
+			m.sendResultWebhook(result)
+		}
+	}
+}
+
+func (m *ApplicationMonitor) sendResultWebhook(result config.MonitorResult) {
+	webhookURL, ok := result.UserContext["webhookUrl"].(string)
+	if !ok || webhookURL == "" {
+		return
+	}
+
+	payload, err := json.Marshal(result)
+	if err != nil {
+		log.Printf("❌ Failed to marshal result webhook: %v", err)
+		return
+	}
+
+	resp, err := httpClient.Post(webhookURL, "application/json", strings.NewReader(string(payload)))
+	if err != nil {
+		log.Printf("❌ Failed to send result webhook: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		log.Printf("⚠️ Webhook returned error status: %d", resp.StatusCode)
+	} else {
+		log.Printf("📤 Result webhook sent successfully for session %s", result.RequestID)
+	}
+}
+
+// Funções auxiliares (mantidas para compatibilidade)
 func getK8sClient() (*kubernetes.Clientset, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create in-cluster config: %v", err)
 	}
 
-	// Timeouts otimizados
 	config.Timeout = 15 * time.Second
 	config.QPS = 50
 	config.Burst = 100
 
-	clientset, err := kubernetes.NewForConfig(config)
+	return kubernetes.NewForConfig(config)
+}
+
+func getRestConfig() *rest.Config {
+	config, err := rest.InClusterConfig()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create kubernetes clientset: %v", err)
+		panic(err.Error())
 	}
-	return clientset, nil
-}
-
-func NewApplicationMonitor(config *config.AppConfig) (*ApplicationMonitor, error) {
-	clientset, err := getK8sClient()
-	if err != nil {
-		return nil, err
-	}
-
-	return &ApplicationMonitor{
-		config:          config,
-		clientset:       clientset,
-		lastStatus:      make(map[string]string),
-		lastCheck:       make(map[string]time.Time),
-		deploymentCache: make(map[string]*v1.Deployment),
-	}, nil
-}
-
-func (m *ApplicationMonitor) Start(ctx context.Context) error {
-	log.Printf("🔄 Starting to monitor %d applications every %v...",
-		len(m.config.Applications), m.config.WatchInterval)
-
-	// Do initial check immediately
-	m.checkAllApplications()
-
-	ticker := time.NewTicker(m.config.WatchInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Println("🛑 Stopping monitor...")
-			return nil
-		case <-ticker.C:
-			m.checkAllApplications()
-		}
-	}
-}
-
-func (m *ApplicationMonitor) checkAllApplications() {
-	startTime := time.Now()
-	log.Printf("🔍 Starting application checks at %v", startTime.Format(time.RFC3339))
-
-	// ✅ Worker pool simples - máximo 5 verificações simultâneas
-	maxWorkers := 5
-	if len(m.config.Applications) < maxWorkers {
-		maxWorkers = len(m.config.Applications)
-	}
-
-	jobs := make(chan config.Application, len(m.config.Applications))
-	results := make(chan bool, len(m.config.Applications))
-
-	// Inicia workers
-	for w := 1; w <= maxWorkers; w++ {
-		go m.worker(w, jobs, results)
-	}
-
-	// Envia jobs
-	for _, app := range m.config.Applications {
-		jobs <- app
-	}
-	close(jobs)
-
-	// Aguarda resultados
-	for i := 0; i < len(m.config.Applications); i++ {
-		<-results
-	}
-
-	duration := time.Since(startTime)
-	log.Printf("✅ Completed %d application checks in %v",
-		len(m.config.Applications), duration)
-}
-
-func (m *ApplicationMonitor) worker(id int, jobs <-chan config.Application, results chan<- bool) {
-	for app := range jobs {
-		m.checkApplication(app)
-		results <- true
-	}
-}
-
-func (m *ApplicationMonitor) checkApplication(app config.Application) {
-	key := app.Name + "/" + app.Namespace
-
-	// ✅ Verifica cache (30 segundos)
-	m.mutex.RLock()
-	cachedDeployment, hasCache := m.deploymentCache[key]
-	lastCheck, checked := m.lastCheck[key]
-	m.mutex.RUnlock()
-
-	if hasCache && checked && time.Since(lastCheck) < 30*time.Second {
-		// ✅ Usa cache
-		status := m.analyzeDeployment(cachedDeployment, app)
-		m.maybeSendWebhook(app, status.Level, status.Message, status.Critical)
-		return
-	}
-
-	// ✅ Busca fresh data
-	deployment, err := m.clientset.AppsV1().Deployments(app.Namespace).Get(
-		context.TODO(), app.Name, metav1.GetOptions{})
-	if err != nil {
-		message := fmt.Sprintf("❌ Failed to get deployment %s: %v", app.Name, err)
-		m.maybeSendWebhook(app, "ERROR", message, true)
-		return
-	}
-
-	// ✅ Atualiza cache
-	m.mutex.Lock()
-	m.deploymentCache[key] = deployment
-	m.lastCheck[key] = time.Now()
-	m.mutex.Unlock()
-
-	status := m.analyzeDeployment(deployment, app)
-	m.maybeSendWebhook(app, status.Level, status.Message, status.Critical)
-}
-
-// ✅ Só envia webhook se o status mudou
-func (m *ApplicationMonitor) maybeSendWebhook(app config.Application, level, message string, critical bool) {
-	key := app.Name + "/" + app.Namespace
-	currentStatus := level + ":" + message
-
-	// ✅ Lógica inteligente:
-	// - SEMPRE envia se for CRÍTICO
-	// - Envia apenas se mudou para status não-crítico
-	if critical || m.lastStatus[key] != currentStatus {
-		m.sendWebhook(app, level, message, critical)
-		m.lastStatus[key] = currentStatus
-
-		if critical {
-			log.Printf("🚨 CRITICAL status for %s: %s", key, level)
-		} else {
-			log.Printf("📤 Status CHANGED for %s: %s", key, level)
-		}
-	} else {
-		log.Printf("🔁 Status UNCHANGED for %s: %s", key, level)
-	}
-}
-
-type DeploymentStatus struct {
-	Level    string
-	Message  string
-	Critical bool
-}
-
-func (m *ApplicationMonitor) analyzeDeployment(deployment *v1.Deployment, app config.Application) DeploymentStatus {
-	// ✅ Check rápido primeiro - replicas disponíveis
-	if deployment.Status.AvailableReplicas < *deployment.Spec.Replicas {
-		message := fmt.Sprintf("⚠️ Deployment %s has %d/%d replicas available",
-			app.Name, deployment.Status.AvailableReplicas, *deployment.Spec.Replicas)
-		return DeploymentStatus{
-			Level:    "WARNING",
-			Message:  message,
-			Critical: true,
-		}
-	}
-
-	// ✅ Check condições rapidamente
-	for _, condition := range deployment.Status.Conditions {
-		if condition.Type == v1.DeploymentAvailable && condition.Status == corev1.ConditionFalse {
-			message := fmt.Sprintf("❌ Deployment %s is not available: %s",
-				app.Name, condition.Message)
-			return DeploymentStatus{
-				Level:    "ERROR",
-				Message:  message,
-				Critical: true,
-			}
-		}
-	}
-
-	// ✅ Só checa pods se necessário
-	if *deployment.Spec.Replicas > 0 && deployment.Status.AvailableReplicas == 0 {
-		return m.checkPods(deployment, app)
-	}
-
-	message := fmt.Sprintf("✅ Deployment %s is healthy - %d/%d replicas available",
-		app.Name, deployment.Status.AvailableReplicas, *deployment.Spec.Replicas)
-	return DeploymentStatus{
-		Level:    "HEALTHY",
-		Message:  message,
-		Critical: false,
-	}
-}
-
-// ✅ Só chama pods quando realmente necessário
-func (m *ApplicationMonitor) checkPods(deployment *v1.Deployment, app config.Application) DeploymentStatus {
-	pods, err := m.clientset.CoreV1().Pods(app.Namespace).List(context.TODO(), metav1.ListOptions{
-		LabelSelector: metav1.FormatLabelSelector(deployment.Spec.Selector),
-		Limit:         10, // ✅ Limita resultado
-	})
-
-	if err != nil {
-		message := fmt.Sprintf("⚠️ Failed to get pods for deployment %s: %v", app.Name, err)
-		return DeploymentStatus{
-			Level:    "WARNING",
-			Message:  message,
-			Critical: false,
-		}
-	}
-
-	// Analyze pod statuses rapidamente
-	runningPods := 0
-	for _, pod := range pods.Items {
-		if pod.Status.Phase == corev1.PodRunning {
-			runningPods++
-		} else if pod.Status.Phase == corev1.PodPending {
-			if time.Since(pod.CreationTimestamp.Time) > 5*time.Minute {
-				message := fmt.Sprintf("❌ Pod %s is stuck in Pending state", pod.Name)
-				return DeploymentStatus{
-					Level:    "ERROR",
-					Message:  message,
-					Critical: true,
-				}
-			}
-		} else if pod.Status.Phase == corev1.PodFailed {
-			message := fmt.Sprintf("❌ Pod %s has failed", pod.Name)
-			return DeploymentStatus{
-				Level:    "ERROR",
-				Message:  message,
-				Critical: true,
-			}
-		}
-	}
-
-	if runningPods < len(pods.Items) {
-		message := fmt.Sprintf("⚠️ Only %d/%d pods are running for deployment %s",
-			runningPods, len(pods.Items), app.Name)
-		return DeploymentStatus{
-			Level:    "WARNING",
-			Message:  message,
-			Critical: runningPods == 0,
-		}
-	}
-
-	message := fmt.Sprintf("✅ Deployment %s pods are healthy", app.Name)
-	return DeploymentStatus{
-		Level:    "HEALTHY",
-		Message:  message,
-		Critical: false,
-	}
-}
-
-func (m *ApplicationMonitor) sendWebhook(app config.Application, status, message string, critical bool) {
-	if app.WebhookURL == "" {
-		return
-	}
-
-	webhookMsg := WebhookMessage{
-		Application: app.Name,
-		Namespace:   app.Namespace,
-		Status:      status,
-		Message:     message,
-		Timestamp:   time.Now(),
-		Critical:    critical,
-	}
-
-	payload, err := json.Marshal(webhookMsg)
-	if err != nil {
-		log.Printf("❌ Failed to marshal webhook message: %v", err)
-		return
-	}
-
-	resp, err := httpClient.Post(app.WebhookURL, "application/json", strings.NewReader(string(payload)))
-	if err != nil {
-		log.Printf("❌ Failed to send webhook for %s: %v", app.Name, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		log.Printf("⚠️ Webhook returned error status for %s: %d", app.Name, resp.StatusCode)
-	} else {
-		log.Printf("📤 Webhook sent successfully for %s", app.Name)
-	}
+	return config
 }

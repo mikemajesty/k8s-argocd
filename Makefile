@@ -32,13 +32,18 @@ push_docker: build_docker
 	docker push $(DOCKER_USER)/$(APP_NAME):$(VERSION)
 	docker push $(DOCKER_USER)/$(APP_NAME):latest
 
-push_git:
+push_tag:
 	@echo "Fazendo commit e push para o repositório Git..."
 	git add -A
 	git commit -m "Bump version to $(VERSION)"
-	git tag v$(VERSION)
+	git tag v$(VERSION)-cat-app
 	git push origin main --tags
 
+push:
+	git add -A
+	git commit -m "Atualização automática"
+	git push origin main
+
 # Target principal para executar tudo
-deploy: release build_docker push_docker push_git
+deploy: release build_docker push_docker push_tag
 	@echo "🚀 Deploy concluído com a versão $(VERSION)!"

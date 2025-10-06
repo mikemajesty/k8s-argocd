@@ -1,27 +1,79 @@
-# values.yaml
+# values.yaml (completo com todas as envs)
+replicaCount: 1
+
 image:
   repository: mikelima1989/app-status-monitor
   tag: latest
   pullPolicy: Always
 
-namespace: argocd
+namespace: app-status-monitor
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# 📊 Configurações de Log
+logLevel: "info"
+logFormat: "json"  # "json" ou "text"
+
+# ⚡️ Configurações de Performance
+performance:
+  maxWorkers: "10"              # Máximo de goroutines simultâneas
+  httpClientTimeout: "30s"      # Timeout para requests HTTP
+  watchReconnectInterval: "5s"  # Intervalo para reconectar watch
+
+# 🕐 Timeouts Padrão (para quando não especificado no request)
+timeouts:
+  kafka: "20m"      # Kafka Topics
+  deployment: "10m" # Deployments Kubernetes
+  database: "25m"   # PostgreSQL/MySQL
+  redis: "15m"      # Redis Clusters
+
+# 🔍 Check Intervals (para fallback de polling)
+checkIntervals:
+  kafka: "30s"      # Intervalo para Kafka
+  deployment: "15s" # Intervalo para Deployments  
+  database: "45s"   # Intervalo para Databases
+  redis: "30s"      # Intervalo para Redis
+  default: "20s"    # Intervalo padrão
+
+# 🔐 Configurações de Segurança
+security:
+  enableMetrics: "true"     # Expõe métricas Prometheus
+  allowedOrigins: "*"       # CORS allowed origins
 
 config:
   watchInterval: 30s
-  applications:
-    - appName: "cat-app"
-      namespace: "cat-app"
-      webhookUrl: "https://webhook.site/e7df2d9b-7488-4bbc-bfdc-c1d5cb60485f"
-      criticalOnly: false
-    - appName: "meu-app"
-      namespace: "default"
-      webhookUrl: "https://webhook.site/e7df2d9b-7488-4bbc-bfdc-c1d5cb60485f"
-      criticalOnly: true
 
 resources:
   requests:
-    memory: "64Mi"
-    cpu: "50m"
-  limits:
     memory: "128Mi"
     cpu: "100m"
+  limits:
+    memory: "256Mi"
+    cpu: "200m"
+
+# Configurações de rede
+networkPolicy:
+  enabled: false
+  allowedNamespaces: []
+  allowedIPs: []
+
+# Configurações de ingress (opcional)
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: app-status-monitor.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Configurações de autoscaling
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
