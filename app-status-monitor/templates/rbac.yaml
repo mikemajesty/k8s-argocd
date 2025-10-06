@@ -5,11 +5,8 @@ metadata:
   labels:
     {{- include "app-status-monitor.labels" . | nindent 4 }}
 rules:
-- apiGroups: ["kafka.crossplane.io"]
-  resources: ["kafkatopics"]
-  verbs: ["get", "list", "watch"]
-- apiGroups: ["aws.database.crossplane.io"]
-  resources: ["rdsinstances"]
+- apiGroups: ["*"]
+  resources: ["*"]
   verbs: ["get", "list", "watch"]
 - apiGroups: [""]
   resources: ["configmaps"]

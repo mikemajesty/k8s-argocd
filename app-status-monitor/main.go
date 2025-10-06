@@ -23,10 +23,8 @@ type AppConfig struct {
 }
 
 func main() {
-	// 🎯 Carrega configurações from environment variables
+	// 🎯 Carrega configurações
 	appConfig := loadConfig()
-
-	// 📊 Configura logger
 	setupLogger(appConfig)
 
 	// 🚀 Cria o monitor
@@ -39,50 +37,38 @@ func main() {
 		log.Fatalf("❌ Failed to create application monitor: %v", err)
 	}
 
-	log.Printf("🚀 Starting AWS Crossplane Monitor")
+	log.Printf("🚀 Starting Crossplane Resource Monitor")
 	log.Printf("📡 Port: %s", appConfig.Port)
-	log.Printf("📊 Log Level: %s", appConfig.LogLevel)
-	log.Printf("⚡ Max Workers: %d", appConfig.MaxWorkers)
 
 	// 🏥 Health check
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":    "healthy",
-			"timestamp": time.Now().Format(time.RFC3339),
-			"version":   "1.0.0",
-		})
-	})
+	http.HandleFunc("/health", healthHandler)
 
 	// 📊 Metrics endpoint
 	if getEnvBool("ENABLE_METRICS", true) {
-		http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "text/plain")
-			fmt.Fprintf(w, "# HELP aws_monitor_active_sessions Current active monitoring sessions\n")
-			fmt.Fprintf(w, "# TYPE aws_monitor_active_sessions gauge\n")
-			fmt.Fprintf(w, "aws_monitor_active_sessions 0\n")
-		})
+		http.HandleFunc("/metrics", metricsHandler)
 		log.Printf("📈 Metrics endpoint enabled at /metrics")
 	}
 
-	// 🎯 Iniciar monitoramento
-	http.HandleFunc("/api/monitor/start", func(w http.ResponseWriter, r *http.Request) {
+	// 🎯 Endpoints principais
+	http.HandleFunc("/api/monitor/start", startMonitoringHandler(appMonitor))
+	http.HandleFunc("/api/monitor/stop", stopMonitoringHandler(appMonitor))
+	http.HandleFunc("/api/monitor/sessions", sessionsHandler)
+	http.HandleFunc("/", apiInfoHandler)
+
+	// 🚀 Inicia servidor
+	startServer(appConfig.Port)
+}
+
+// 🎯 Handler para iniciar monitoramento
+func startMonitoringHandler(appMonitor *monitor.ApplicationMonitor) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		// 🔒 CORS headers
-		if allowedOrigins := getEnv("ALLOWED_ORIGINS", "*"); allowedOrigins != "" {
-			w.Header().Set("Access-Control-Allow-Origin", allowedOrigins)
-			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		}
-
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
+		// 🔒 CORS
+		setupCORS(w)
 
 		var req struct {
 			Type        string                 `json:"type"`
@@ -100,29 +86,23 @@ func main() {
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			log.Printf("❌ Invalid request body: %v", err)
 			http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
 			return
 		}
 
 		// ✅ Validações
-		if req.ClusterName == "" {
-			http.Error(w, "clusterName is required", http.StatusBadRequest)
-			return
-		}
-
-		if req.Name == "" || req.Namespace == "" || req.GVR.Resource == "" {
-			http.Error(w, "name, namespace and gvr.resource are required", http.StatusBadRequest)
+		if req.ClusterName == "" || req.Name == "" || req.Namespace == "" || req.GVR.Resource == "" {
+			http.Error(w, "clusterName, name, namespace and gvr.resource are required", http.StatusBadRequest)
 			return
 		}
 
 		// ⏱️ Parse timeout
 		timeout, err := time.ParseDuration(req.Timeout)
 		if err != nil || timeout == 0 {
-			timeout = getDefaultTimeout(req.Type)
+			timeout = 30 * time.Minute // Default para Crossplane
 		}
 
-		// 🔧 Prepara userContext
+		// 🔧 Prepara request
 		userContext := req.UserContext
 		if userContext == nil {
 			userContext = make(map[string]interface{})
@@ -130,9 +110,6 @@ func main() {
 		if req.WebhookURL != "" {
 			userContext["webhookUrl"] = req.WebhookURL
 		}
-
-		userContext["requestTimestamp"] = time.Now().Format(time.RFC3339)
-		userContext["timeout"] = timeout.String()
 
 		monitorReq := config.MonitorRequest{
 			ID:          generateID(),
@@ -150,10 +127,9 @@ func main() {
 			},
 		}
 
-		// ✅ CORREÇÃO: context.Background() em vez de r.Context()
+		// ✅ Inicia monitoramento
 		sessionID, err := appMonitor.StartMonitoring(context.Background(), monitorReq)
 		if err != nil {
-			log.Printf("❌ Failed to start monitoring: %v", err)
 			http.Error(w, fmt.Sprintf("Failed to start monitoring: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -175,10 +151,12 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		json.NewEncoder(w).Encode(response)
-	})
+	}
+}
 
-	// 🛑 Parar monitoramento
-	http.HandleFunc("/api/monitor/stop", func(w http.ResponseWriter, r *http.Request) {
+// 🛑 Handler para parar monitoramento
+func stopMonitoringHandler(appMonitor *monitor.ApplicationMonitor) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		sessionID := r.URL.Query().Get("sessionId")
 		if sessionID == "" {
 			http.Error(w, "sessionId is required", http.StatusBadRequest)
@@ -186,58 +164,81 @@ func main() {
 		}
 
 		if err := appMonitor.StopMonitoring(sessionID); err != nil {
-			log.Printf("❌ Failed to stop monitoring session %s: %v", sessionID, err)
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-
-		log.Printf("✅ Monitoring stopped - Session: %s", sessionID)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
 			"status":    "monitoring_stopped",
 			"sessionId": sessionID,
 		})
+	}
+}
+
+// 📋 Handler para sessões ativas
+func sessionsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"activeSessions": 0,
+		"timestamp":      time.Now().Format(time.RFC3339),
 	})
+}
 
-	// 📋 Status das sessões ativas
-	http.HandleFunc("/api/monitor/sessions", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"activeSessions": 0,
-			"timestamp":      time.Now().Format(time.RFC3339),
-		})
+// 📚 Handler para info da API
+func apiInfoHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"name":          "Crossplane Resource Monitor API",
+		"version":       "1.0.0",
+		"description":   "Generic Crossplane resource monitoring with Watch support",
+		"compatibility": "Works with ANY Crossplane resource (AWS, GCP, Azure, Kafka, etc.)",
+		"endpoints": map[string]string{
+			"health":           "GET  /health",
+			"start_monitoring": "POST /api/monitor/start",
+			"stop_monitoring":  "GET  /api/monitor/stop?sessionId=<id>",
+			"active_sessions":  "GET  /api/monitor/sessions",
+			"metrics":          "GET  /metrics",
+		},
+		"timestamp": time.Now().Format(time.RFC3339),
 	})
+}
 
-	// 📚 API Info
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"name":        "AWS Crossplane Monitor API",
-			"version":     "1.0.0",
-			"description": "AWS RDS + Kafka monitoring with Crossplane Watch support",
-			"supportedResources": []string{
-				"RDSInstance (aws.database.crossplane.io)",
-				"KafkaTopic (kafka.crossplane.io)",
-			},
-			"endpoints": map[string]string{
-				"health":           "GET  /health",
-				"start_monitoring": "POST /api/monitor/start",
-				"stop_monitoring":  "GET  /api/monitor/stop?sessionId=<id>",
-				"active_sessions":  "GET  /api/monitor/sessions",
-				"metrics":          "GET  /metrics",
-			},
-			"timestamp": time.Now().Format(time.RFC3339),
-		})
+// 🏥 Health check handler
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "healthy",
+		"timestamp": time.Now().Format(time.RFC3339),
+		"version":   "1.0.0",
 	})
+}
 
-	// 🚀 Inicia servidor
-	port := ":" + appConfig.Port
+// 📊 Metrics handler
+func metricsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain")
+	fmt.Fprintf(w, "# HELP crossplane_monitor_active_sessions Current active monitoring sessions\n")
+	fmt.Fprintf(w, "# TYPE crossplane_monitor_active_sessions gauge\n")
+	fmt.Fprintf(w, "crossplane_monitor_active_sessions 0\n")
+}
+
+// 🔧 CORS setup
+func setupCORS(w http.ResponseWriter) {
+	if allowedOrigins := getEnv("ALLOWED_ORIGINS", "*"); allowedOrigins != "" {
+		w.Header().Set("Access-Control-Allow-Origin", allowedOrigins)
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	}
+}
+
+// 🚀 Inicia servidor
+func startServer(port string) {
+	port = ":" + port
 	log.Printf("🌐 Server starting on port %s", port)
 
 	server := &http.Server{
@@ -254,42 +255,26 @@ func main() {
 
 // 🎯 Carrega configuração
 func loadConfig() *AppConfig {
-	config := &AppConfig{
+	return &AppConfig{
 		Port:        getEnv("PORT", "8080"),
 		LogLevel:    getEnv("LOG_LEVEL", "info"),
 		LogFormat:   getEnv("LOG_FORMAT", "text"),
 		MaxWorkers:  getEnvInt("MAX_WORKERS", 10),
 		HTTPTimeout: getEnvDuration("HTTP_CLIENT_TIMEOUT", 30*time.Second),
 	}
-	return config
 }
 
-// 📊 Configura o logger
+// 📊 Configura logger
 func setupLogger(config *AppConfig) {
 	log.SetFlags(0)
-
 	if config.LogFormat == "json" {
 		log.SetFlags(log.LstdFlags)
 	} else {
 		log.SetFlags(log.LstdFlags | log.Lshortfile)
 	}
-
-	log.Printf("🔧 Logger configured - Level: %s, Format: %s", config.LogLevel, config.LogFormat)
 }
 
-// ⏱️ Retorna timeout padrão para AWS
-func getDefaultTimeout(resourceType string) time.Duration {
-	switch resourceType {
-	case "kafkatopic":
-		return getEnvDuration("DEFAULT_TIMEOUT_KAFKA", 20*time.Minute)
-	case "rdsinstance":
-		return getEnvDuration("DEFAULT_TIMEOUT_RDS", 40*time.Minute) // RDS leva mais tempo
-	default:
-		return 30 * time.Minute
-	}
-}
-
-// 🆔 Gera ID único para sessão
+// 🆔 Gera ID único
 func generateID() string {
 	return fmt.Sprintf("mon-%d", time.Now().UnixNano())
 }

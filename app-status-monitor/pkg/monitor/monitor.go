@@ -69,7 +69,7 @@ func (m *ApplicationMonitor) StartMonitoring(ctx context.Context, req config.Mon
 
 	timeout := req.Timeout
 	if timeout == 0 {
-		timeout = 20 * time.Minute // Default para Kafka
+		timeout = 30 * time.Minute // Default para recursos Crossplane
 	}
 
 	monitorCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -159,7 +159,7 @@ func (m *ApplicationMonitor) monitorWithWatch(ctx context.Context, req config.Mo
 			case watch.Added, watch.Modified:
 				if obj, ok := event.Object.(*unstructured.Unstructured); ok {
 					log.Printf("🔄 Event %s received for %s", event.Type, req.Name)
-					status, message, done := m.analyzeResourceStatus(obj, req.Type)
+					status, message, done := m.analyzeCrossplaneResourceStatus(obj, req.Type)
 					if done {
 						log.Printf("✅ Resource %s reached final state: %s", req.Name, status)
 						m.sendFinalResult(req, status, message)
@@ -184,100 +184,13 @@ func (m *ApplicationMonitor) monitorWithWatch(ctx context.Context, req config.Mo
 }
 
 // ============================================================================
-// 🎯 ANALISADOR DE RECURSOS - ROTEADOR PRINCIPAL
+// ✅ VALIDAÇÃO GENÉRICA PARA QUALQUER RECURSO CROSSPLANE
 // ============================================================================
 
-func (m *ApplicationMonitor) analyzeResourceStatus(obj *unstructured.Unstructured, resourceType string) (string, string, bool) {
-	// ✅ ROTEADOR - Adicione novos recursos AQUI!
-	switch resourceType {
-
-	case "kafkatopic":
-		// ✅ VALIDAÇÃO ESPECÍFICA DO KAFKA
-		return m.analyzeKafkaTopicStatus(obj, resourceType) // ← Passe resourceType aqui
-
-	// 🔧 FUTURO: Adicione outros recursos AQUI!
-	// case "rdsinstance":
-	//     return m.analyzeRDSStatus(obj, resourceType)
-	//
-	// case "s3bucket":
-	//     return m.analyzeS3Status(obj, resourceType)
-
-	default:
-		// ✅ FALLBACK para recursos sem validação específica
-		return m.analyzeGenericCrossplaneStatus(obj, resourceType)
-	}
-}
-
-// ============================================================================
-// 🔧 VALIDAÇÕES ESPECÍFICAS POR RECURSO
-// ============================================================================
-
-// ✅ VALIDAÇÃO ESPECÍFICA DO KAFKA TOPIC
-func (m *ApplicationMonitor) analyzeKafkaTopicStatus(obj *unstructured.Unstructured, resourceType string) (string, string, bool) {
-	// 🔧 SE PRECISAR: Adicione validações específicas do Kafka AQUI!
-	// Exemplo: Verificar se o topic realmente existe no broker Kafka
-	// name := obj.GetName()
-	// if topicStatus, found, _ := unstructured.NestedString(obj.Object, "status", "atProvider", "topicStatus"); found {
-	//     switch topicStatus {
-	//     case "ACTIVE":
-	//         return "SUCCESS", fmt.Sprintf("✅ %s '%s' is active", resourceType, name), true
-	//     case "FAILED":
-	//         return "ERROR", fmt.Sprintf("❌ %s '%s' failed", resourceType, name), true
-	//     default:
-	//         return "PENDING", fmt.Sprintf("⏳ %s '%s' is %s", resourceType, name, topicStatus), false
-	//     }
-	// }
-
-	// ✅ Por enquanto, usa validação genérica do Crossplane
-	return m.analyzeGenericCrossplaneStatus(obj, resourceType)
-}
-
-// 🔧 FUTURO: VALIDAÇÃO ESPECÍFICA DO RDS (EXEMPLO)
-// func (m *ApplicationMonitor) analyzeRDSStatus(obj *unstructured.Unstructured) (string, string, bool) {
-// 	name := obj.GetName()
-//
-// 	// ✅ Verificar estado específico do RDS na AWS
-// 	if dbStatus, found, _ := unstructured.NestedString(obj.Object, "status", "atProvider", "dbInstanceStatus"); found {
-// 		switch dbStatus {
-// 		case "available":
-// 			return "SUCCESS", fmt.Sprintf("✅ RDS Instance '%s' is available", name), true
-// 		case "failed", "deleting", "incompatible-parameters":
-// 			return "ERROR", fmt.Sprintf("❌ RDS Instance '%s' failed: %s", name, dbStatus), true
-// 		default:
-// 			return "PENDING", fmt.Sprintf("⏳ RDS Instance '%s' is %s", name, dbStatus), false
-// 		}
-// 	}
-//
-// 	// Fallback para condições Crossplane
-// 	return m.analyzeGenericCrossplaneStatus(obj, "rdsinstance")
-// }
-
-// 🔧 FUTURO: VALIDAÇÃO ESPECÍFICA DO S3 (EXEMPLO)
-// func (m *ApplicationMonitor) analyzeS3Status(obj *unstructured.Unstructured) (string, string, bool) {
-// 	name := obj.GetName()
-//
-// 	if bucketStatus, found, _ := unstructured.NestedString(obj.Object, "status", "atProvider", "bucketStatus"); found {
-// 		switch bucketStatus {
-// 		case "Available":
-// 			return "SUCCESS", fmt.Sprintf("✅ S3 Bucket '%s' is available", name), true
-// 		case "Failed":
-// 			return "ERROR", fmt.Sprintf("❌ S3 Bucket '%s' failed", name), true
-// 		default:
-// 			return "PENDING", fmt.Sprintf("⏳ S3 Bucket '%s' is %s", name, bucketStatus), false
-// 		}
-// 	}
-//
-// 	return m.analyzeGenericCrossplaneStatus(obj, "s3bucket")
-// }
-
-// ============================================================================
-// ✅ VALIDAÇÃO GENÉRICA CROSSPLANE (FALLBACK)
-// ============================================================================
-
-func (m *ApplicationMonitor) analyzeGenericCrossplaneStatus(obj *unstructured.Unstructured, resourceType string) (string, string, bool) {
+func (m *ApplicationMonitor) analyzeCrossplaneResourceStatus(obj *unstructured.Unstructured, resourceType string) (string, string, bool) {
 	name := obj.GetName()
 
-	// ✅ Condições padrão do Crossplane (Ready/Synced)
+	// ✅ CONDIÇÕES PADRÃO CROSSPLANE - Funciona para QUALQUER recurso
 	conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
 	if found {
 		for _, condition := range conditions {
@@ -287,6 +200,7 @@ func (m *ApplicationMonitor) analyzeGenericCrossplaneStatus(obj *unstructured.Un
 				reason, _ := conditionMap["reason"].(string)
 				message, _ := conditionMap["message"].(string)
 
+				// ✅ PADRÃO CROSSPLANE: Ready e Synced
 				if conditionType == "Ready" || conditionType == "Synced" {
 					switch status {
 					case "True":
@@ -301,7 +215,7 @@ func (m *ApplicationMonitor) analyzeGenericCrossplaneStatus(obj *unstructured.Un
 		}
 	}
 
-	// ✅ Fallback para fases genéricas
+	// ✅ FALLBACK: Verifica fases genéricas (opcional)
 	if phase, found, _ := unstructured.NestedString(obj.Object, "status", "phase"); found {
 		switch phase {
 		case "Ready", "Running", "Succeeded", "Bound", "Available":
@@ -311,11 +225,12 @@ func (m *ApplicationMonitor) analyzeGenericCrossplaneStatus(obj *unstructured.Un
 		}
 	}
 
+	// ⏳ Recurso ainda não tem condições definidas - ainda provisionando
 	return "PENDING", fmt.Sprintf("⏳ %s '%s' is being provisioned", resourceType, name), false
 }
 
 // ============================================================================
-// ✅ MÉTODOS AUXILIARES (MANTIDOS)
+// ✅ MÉTODOS AUXILIARES
 // ============================================================================
 
 func (m *ApplicationMonitor) sendFinalResult(req config.MonitorRequest, status, message string) {
