@@ -3,10 +3,10 @@ replicaCount: 1
 
 image:
   repository: mikelima1989/app-status-monitor
-  tag: "1.0.7"
+  tag: "1.0.8"
   pullPolicy: Always
 
-namespace: app-status-monitor
+namespace: argocd
 
 service:
   type: ClusterIP
