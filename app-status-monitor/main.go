@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -152,7 +153,7 @@ func main() {
 			},
 		}
 
-		sessionID, err := appMonitor.StartMonitoring(r.Context(), monitorReq)
+		sessionID, err := appMonitor.StartMonitoring(context.Background(), monitorReq)
 		if err != nil {
 			log.Printf("❌ Failed to start monitoring: %v", err)
 			http.Error(w, fmt.Sprintf("Failed to start monitoring: %v", err), http.StatusInternalServerError)

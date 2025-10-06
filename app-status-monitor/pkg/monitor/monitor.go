@@ -16,8 +16,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 )
 
 type MonitorSession struct {
@@ -71,7 +69,7 @@ func (m *ApplicationMonitor) StartMonitoring(ctx context.Context, req config.Mon
 
 	timeout := req.Timeout
 	if timeout == 0 {
-		timeout = 15 * time.Minute // Default aumentado para 15min
+		timeout = 15 * time.Minute
 	}
 
 	monitorCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -84,7 +82,7 @@ func (m *ApplicationMonitor) StartMonitoring(ctx context.Context, req config.Mon
 
 	m.activeSessions[req.ID] = session
 
-	// ✅ Usa Watch (mais eficiente) em vez de polling
+	// ✅ APENAS WATCH - SEM FALLBACK
 	go m.monitorWithWatch(monitorCtx, req)
 
 	log.Printf("🚀 Started monitoring session %s for %s %s/%s in cluster %s",
@@ -109,7 +107,7 @@ func (m *ApplicationMonitor) StopMonitoring(sessionID string) error {
 	return nil
 }
 
-// ⚡️ MONITORAMENTO COM WATCH - Espera apenas por mudanças
+// ⚡️ APENAS WATCH - SEM FALLBACK
 func (m *ApplicationMonitor) monitorWithWatch(ctx context.Context, req config.MonitorRequest) {
 	log.Printf("👀 Starting WATCH for %s %s/%s in cluster %s",
 		req.GVR.Resource, req.Namespace, req.Name, req.ClusterName)
@@ -126,14 +124,14 @@ func (m *ApplicationMonitor) monitorWithWatch(ctx context.Context, req config.Mo
 		Resource: req.GVR.Resource,
 	}
 
-	// ✅ Tenta criar watcher - escuta APENAS mudanças
+	// ✅ Tenta criar watcher - se falhar, erro direto
 	watcher, err := client.Resource(gvr).Namespace(req.Namespace).Watch(ctx, metav1.ListOptions{
 		FieldSelector: fmt.Sprintf("metadata.name=%s", req.Name),
 	})
 
 	if err != nil {
-		log.Printf("⚠️ Watch failed for %s, falling back to polling: %v", req.Name, err)
-		m.monitorWithPolling(ctx, req) // Fallback para polling
+		log.Printf("❌ Watch failed for %s: %v", req.Name, err)
+		m.sendErrorResult(req, fmt.Sprintf("Watch failed: %v", err))
 		return
 	}
 	defer watcher.Stop()
@@ -151,8 +149,8 @@ func (m *ApplicationMonitor) monitorWithWatch(ctx context.Context, req config.Mo
 
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
-				log.Printf("🔁 Watch channel closed for %s, reconnecting...", req.Name)
-				m.monitorWithWatch(ctx, req) // Reconecta
+				log.Printf("🔁 Watch channel closed for %s", req.Name)
+				m.sendErrorResult(req, "Watch channel closed")
 				return
 			}
 
@@ -177,110 +175,12 @@ func (m *ApplicationMonitor) monitorWithWatch(ctx context.Context, req config.Mo
 				return
 
 			case watch.Error:
-				log.Printf("⚠️ Watch error for %s, falling back to polling: %v", req.Name, event.Object)
-				m.monitorWithPolling(ctx, req)
+				log.Printf("⚠️ Watch error for %s: %v", req.Name, event.Object)
+				m.sendErrorResult(req, fmt.Sprintf("Watch error: %v", event.Object))
 				return
 			}
 		}
 	}
-}
-
-// 🔁 Fallback para polling se Watch falhar
-func (m *ApplicationMonitor) monitorWithPolling(ctx context.Context, req config.MonitorRequest) {
-	log.Printf("🔄 Using POLLING for %s %s/%s", req.GVR.Resource, req.Namespace, req.Name)
-
-	checkInterval := m.getCheckInterval(req.Type)
-	ticker := time.NewTicker(checkInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			if ctx.Err() == context.DeadlineExceeded {
-				m.sendTimeoutResult(req)
-			}
-			return
-
-		case <-ticker.C:
-			result, done := m.checkResourceStatus(req)
-			if done {
-				m.resultsChan <- result
-				m.mutex.Lock()
-				delete(m.activeSessions, req.ID)
-				m.mutex.Unlock()
-				return
-			}
-		}
-	}
-}
-
-// ✅ Intervalos de check inteligentes
-func (m *ApplicationMonitor) getCheckInterval(resourceType string) time.Duration {
-	switch resourceType {
-	case "kafkatopic":
-		return 30 * time.Second // Kafka é mais lento
-	case "postgresqlinstance", "rediscluster":
-		return 45 * time.Second // Bancos são mais lentos
-	case "deployment":
-		return 15 * time.Second // Deployments são mais rápidos
-	default:
-		return 20 * time.Second // Padrão
-	}
-}
-
-func (m *ApplicationMonitor) checkResourceStatus(req config.MonitorRequest) (config.MonitorResult, bool) {
-	client, err := m.clusterManager.GetClientForCluster(req.ClusterName)
-	if err != nil {
-		return config.MonitorResult{
-			RequestID:   req.ID,
-			Type:        req.Type,
-			Name:        req.Name,
-			Namespace:   req.Namespace,
-			Status:      "ERROR",
-			Message:     fmt.Sprintf("Failed to connect to cluster %s: %v", req.ClusterName, err),
-			Timestamp:   time.Now(),
-			UserContext: req.UserContext,
-			GVR:         fmt.Sprintf("%s/%s/%s", req.GVR.Group, req.GVR.Version, req.GVR.Resource),
-			ClusterName: req.ClusterName,
-		}, true
-	}
-
-	gvr := schema.GroupVersionResource{
-		Group:    req.GVR.Group,
-		Version:  req.GVR.Version,
-		Resource: req.GVR.Resource,
-	}
-
-	obj, err := client.Resource(gvr).Namespace(req.Namespace).Get(context.TODO(), req.Name, metav1.GetOptions{})
-	if err != nil {
-		return config.MonitorResult{
-			RequestID:   req.ID,
-			Type:        req.Type,
-			Name:        req.Name,
-			Namespace:   req.Namespace,
-			Status:      "PENDING",
-			Message:     fmt.Sprintf("Resource not available in cluster %s: %v", req.ClusterName, err),
-			Timestamp:   time.Now(),
-			UserContext: req.UserContext,
-			GVR:         gvr.String(),
-			ClusterName: req.ClusterName,
-		}, false
-	}
-
-	status, message, done := m.analyzeResourceStatus(obj, req.Type)
-
-	return config.MonitorResult{
-		RequestID:   req.ID,
-		Type:        req.Type,
-		Name:        req.Name,
-		Namespace:   req.Namespace,
-		Status:      status,
-		Message:     message,
-		Timestamp:   time.Now(),
-		UserContext: req.UserContext,
-		GVR:         gvr.String(),
-		ClusterName: req.ClusterName,
-	}, done
 }
 
 // ✅ Métodos auxiliares para resultados
@@ -427,26 +327,4 @@ func (m *ApplicationMonitor) sendResultWebhook(result config.MonitorResult) {
 	} else {
 		log.Printf("📤 Result webhook sent successfully for session %s", result.RequestID)
 	}
-}
-
-// Funções auxiliares (mantidas para compatibilidade)
-func getK8sClient() (*kubernetes.Clientset, error) {
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create in-cluster config: %v", err)
-	}
-
-	config.Timeout = 15 * time.Second
-	config.QPS = 50
-	config.Burst = 100
-
-	return kubernetes.NewForConfig(config)
-}
-
-func getRestConfig() *rest.Config {
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		panic(err.Error())
-	}
-	return config
 }
