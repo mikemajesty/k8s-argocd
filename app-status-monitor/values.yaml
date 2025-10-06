@@ -3,7 +3,7 @@ replicaCount: 1
 
 image:
   repository: mikelima1989/app-status-monitor
-  tag: "1.0.9"
+  tag: "1.0.10"
   pullPolicy: Always
 
 namespace: argocd
@@ -62,7 +62,7 @@ networkPolicy:
 # Configurações de ingress (opcional)
 ingress:
   enabled: true
-  host: status-monitor.app.com  # ⬅️ Seu domínio aqui
+  host: status-monitor.127.0.0.1.nip.io  # ⬅️ Seu domínio aqui
   ingressClassName: nginx  # ⬅️ Ajuste conforme seu ingress controller
   
   # Annotations comuns
