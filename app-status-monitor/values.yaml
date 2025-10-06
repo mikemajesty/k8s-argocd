@@ -3,7 +3,7 @@ replicaCount: 1
 
 image:
   repository: mikelima1989/app-status-monitor
-  tag: "1.0.8"
+  tag: "1.0.9"
   pullPolicy: Always
 
 namespace: argocd
@@ -61,15 +61,18 @@ networkPolicy:
 
 # Configurações de ingress (opcional)
 ingress:
-  enabled: false
-  className: ""
-  annotations: {}
-  hosts:
-    - host: app-status-monitor.local
-      paths:
-        - path: /
-          pathType: Prefix
+  enabled: true
+  host: status-monitor.app.com  # ⬅️ Seu domínio aqui
+  ingressClassName: nginx  # ⬅️ Ajuste conforme seu ingress controller
+  
+  # Annotations comuns
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    
+  # TLS/SSL (opcional)
   tls: []
+
 
 # Configurações de autoscaling
 autoscaling:
