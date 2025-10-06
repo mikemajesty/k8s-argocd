@@ -69,7 +69,7 @@ func (m *ApplicationMonitor) StartMonitoring(ctx context.Context, req config.Mon
 
 	timeout := req.Timeout
 	if timeout == 0 {
-		timeout = 15 * time.Minute
+		timeout = 20 * time.Minute // Default para Kafka
 	}
 
 	monitorCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -183,7 +183,141 @@ func (m *ApplicationMonitor) monitorWithWatch(ctx context.Context, req config.Mo
 	}
 }
 
-// ✅ Métodos auxiliares para resultados
+// ============================================================================
+// 🎯 ANALISADOR DE RECURSOS - ROTEADOR PRINCIPAL
+// ============================================================================
+
+func (m *ApplicationMonitor) analyzeResourceStatus(obj *unstructured.Unstructured, resourceType string) (string, string, bool) {
+	// ✅ ROTEADOR - Adicione novos recursos AQUI!
+	switch resourceType {
+
+	case "kafkatopic":
+		// ✅ VALIDAÇÃO ESPECÍFICA DO KAFKA
+		return m.analyzeKafkaTopicStatus(obj, resourceType) // ← Passe resourceType aqui
+
+	// 🔧 FUTURO: Adicione outros recursos AQUI!
+	// case "rdsinstance":
+	//     return m.analyzeRDSStatus(obj, resourceType)
+	//
+	// case "s3bucket":
+	//     return m.analyzeS3Status(obj, resourceType)
+
+	default:
+		// ✅ FALLBACK para recursos sem validação específica
+		return m.analyzeGenericCrossplaneStatus(obj, resourceType)
+	}
+}
+
+// ============================================================================
+// 🔧 VALIDAÇÕES ESPECÍFICAS POR RECURSO
+// ============================================================================
+
+// ✅ VALIDAÇÃO ESPECÍFICA DO KAFKA TOPIC
+func (m *ApplicationMonitor) analyzeKafkaTopicStatus(obj *unstructured.Unstructured, resourceType string) (string, string, bool) {
+	// 🔧 SE PRECISAR: Adicione validações específicas do Kafka AQUI!
+	// Exemplo: Verificar se o topic realmente existe no broker Kafka
+	// name := obj.GetName()
+	// if topicStatus, found, _ := unstructured.NestedString(obj.Object, "status", "atProvider", "topicStatus"); found {
+	//     switch topicStatus {
+	//     case "ACTIVE":
+	//         return "SUCCESS", fmt.Sprintf("✅ %s '%s' is active", resourceType, name), true
+	//     case "FAILED":
+	//         return "ERROR", fmt.Sprintf("❌ %s '%s' failed", resourceType, name), true
+	//     default:
+	//         return "PENDING", fmt.Sprintf("⏳ %s '%s' is %s", resourceType, name, topicStatus), false
+	//     }
+	// }
+
+	// ✅ Por enquanto, usa validação genérica do Crossplane
+	return m.analyzeGenericCrossplaneStatus(obj, resourceType)
+}
+
+// 🔧 FUTURO: VALIDAÇÃO ESPECÍFICA DO RDS (EXEMPLO)
+// func (m *ApplicationMonitor) analyzeRDSStatus(obj *unstructured.Unstructured) (string, string, bool) {
+// 	name := obj.GetName()
+//
+// 	// ✅ Verificar estado específico do RDS na AWS
+// 	if dbStatus, found, _ := unstructured.NestedString(obj.Object, "status", "atProvider", "dbInstanceStatus"); found {
+// 		switch dbStatus {
+// 		case "available":
+// 			return "SUCCESS", fmt.Sprintf("✅ RDS Instance '%s' is available", name), true
+// 		case "failed", "deleting", "incompatible-parameters":
+// 			return "ERROR", fmt.Sprintf("❌ RDS Instance '%s' failed: %s", name, dbStatus), true
+// 		default:
+// 			return "PENDING", fmt.Sprintf("⏳ RDS Instance '%s' is %s", name, dbStatus), false
+// 		}
+// 	}
+//
+// 	// Fallback para condições Crossplane
+// 	return m.analyzeGenericCrossplaneStatus(obj, "rdsinstance")
+// }
+
+// 🔧 FUTURO: VALIDAÇÃO ESPECÍFICA DO S3 (EXEMPLO)
+// func (m *ApplicationMonitor) analyzeS3Status(obj *unstructured.Unstructured) (string, string, bool) {
+// 	name := obj.GetName()
+//
+// 	if bucketStatus, found, _ := unstructured.NestedString(obj.Object, "status", "atProvider", "bucketStatus"); found {
+// 		switch bucketStatus {
+// 		case "Available":
+// 			return "SUCCESS", fmt.Sprintf("✅ S3 Bucket '%s' is available", name), true
+// 		case "Failed":
+// 			return "ERROR", fmt.Sprintf("❌ S3 Bucket '%s' failed", name), true
+// 		default:
+// 			return "PENDING", fmt.Sprintf("⏳ S3 Bucket '%s' is %s", name, bucketStatus), false
+// 		}
+// 	}
+//
+// 	return m.analyzeGenericCrossplaneStatus(obj, "s3bucket")
+// }
+
+// ============================================================================
+// ✅ VALIDAÇÃO GENÉRICA CROSSPLANE (FALLBACK)
+// ============================================================================
+
+func (m *ApplicationMonitor) analyzeGenericCrossplaneStatus(obj *unstructured.Unstructured, resourceType string) (string, string, bool) {
+	name := obj.GetName()
+
+	// ✅ Condições padrão do Crossplane (Ready/Synced)
+	conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if found {
+		for _, condition := range conditions {
+			if conditionMap, ok := condition.(map[string]interface{}); ok {
+				conditionType, _ := conditionMap["type"].(string)
+				status, _ := conditionMap["status"].(string)
+				reason, _ := conditionMap["reason"].(string)
+				message, _ := conditionMap["message"].(string)
+
+				if conditionType == "Ready" || conditionType == "Synced" {
+					switch status {
+					case "True":
+						return "SUCCESS", fmt.Sprintf("✅ %s '%s' is ready and synced", resourceType, name), true
+					case "False":
+						return "ERROR", fmt.Sprintf("❌ %s '%s' failed: %s - %s", resourceType, name, reason, message), true
+					case "Unknown":
+						return "PENDING", fmt.Sprintf("⏳ %s '%s' status unknown: %s", resourceType, name, message), false
+					}
+				}
+			}
+		}
+	}
+
+	// ✅ Fallback para fases genéricas
+	if phase, found, _ := unstructured.NestedString(obj.Object, "status", "phase"); found {
+		switch phase {
+		case "Ready", "Running", "Succeeded", "Bound", "Available":
+			return "SUCCESS", fmt.Sprintf("✅ %s '%s' is ready", resourceType, name), true
+		case "Failed", "Error":
+			return "ERROR", fmt.Sprintf("❌ %s '%s' failed", resourceType, name), true
+		}
+	}
+
+	return "PENDING", fmt.Sprintf("⏳ %s '%s' is being provisioned", resourceType, name), false
+}
+
+// ============================================================================
+// ✅ MÉTODOS AUXILIARES (MANTIDOS)
+// ============================================================================
+
 func (m *ApplicationMonitor) sendFinalResult(req config.MonitorRequest, status, message string) {
 	m.resultsChan <- config.MonitorResult{
 		RequestID:   req.ID,
@@ -211,85 +345,6 @@ func (m *ApplicationMonitor) sendErrorResult(req config.MonitorRequest, message 
 
 func (m *ApplicationMonitor) sendTimeoutResult(req config.MonitorRequest) {
 	m.sendFinalResult(req, "TIMEOUT", fmt.Sprintf("Monitoring timeout after %v", req.Timeout))
-}
-
-func (m *ApplicationMonitor) analyzeResourceStatus(obj *unstructured.Unstructured, resourceType string) (string, string, bool) {
-	name := obj.GetName()
-
-	// Checker genérico para qualquer recurso (Crossplane)
-	conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
-	if found {
-		for _, condition := range conditions {
-			if conditionMap, ok := condition.(map[string]interface{}); ok {
-				conditionType, _ := conditionMap["type"].(string)
-				status, _ := conditionMap["status"].(string)
-				reason, _ := conditionMap["reason"].(string)
-				message, _ := conditionMap["message"].(string)
-
-				if conditionType == "Ready" || conditionType == "Synced" {
-					switch status {
-					case "True":
-						return "SUCCESS", fmt.Sprintf("✅ Resource '%s' is ready and synced", name), true
-					case "False":
-						return "ERROR", fmt.Sprintf("❌ Resource '%s' failed: %s - %s", name, reason, message), true
-					case "Unknown":
-						return "PENDING", fmt.Sprintf("⏳ Resource '%s' status unknown: %s", name, message), false
-					}
-				}
-			}
-		}
-	}
-
-	// Check específico para Deployments
-	if resourceType == "deployment" {
-		return m.analyzeDeploymentStatus(obj)
-	}
-
-	// Verifica status.phase como fallback
-	if phase, found, _ := unstructured.NestedString(obj.Object, "status", "phase"); found {
-		switch phase {
-		case "Ready", "Running", "Succeeded":
-			return "SUCCESS", fmt.Sprintf("✅ Resource '%s' is ready (phase: %s)", name, phase), true
-		case "Failed", "Error":
-			return "ERROR", fmt.Sprintf("❌ Resource '%s' failed (phase: %s)", name, phase), true
-		}
-	}
-
-	return "PENDING", fmt.Sprintf("⏳ Resource '%s' is being provisioned", name), false
-}
-
-func (m *ApplicationMonitor) analyzeDeploymentStatus(obj *unstructured.Unstructured) (string, string, bool) {
-	name := obj.GetName()
-
-	availableReplicas, _, _ := unstructured.NestedInt64(obj.Object, "status", "availableReplicas")
-	replicas, foundReplicas, _ := unstructured.NestedInt64(obj.Object, "spec", "replicas")
-
-	if !foundReplicas {
-		replicas = 1
-	}
-
-	if availableReplicas >= replicas && replicas > 0 {
-		return "SUCCESS", fmt.Sprintf("✅ Deployment '%s' is ready (%d/%d replicas)", name, availableReplicas, replicas), true
-	}
-
-	// Verifica condições de falha
-	conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
-	if found {
-		for _, condition := range conditions {
-			if conditionMap, ok := condition.(map[string]interface{}); ok {
-				conditionType, _ := conditionMap["type"].(string)
-				conditionStatus, _ := conditionMap["status"].(string)
-				reason, _ := conditionMap["reason"].(string)
-				message, _ := conditionMap["message"].(string)
-
-				if conditionType == "Progressing" && conditionStatus == "False" && reason == "ProgressDeadlineExceeded" {
-					return "ERROR", fmt.Sprintf("❌ Deployment '%s' failed: %s", name, message), true
-				}
-			}
-		}
-	}
-
-	return "PENDING", fmt.Sprintf("⏳ Deployment '%s' in progress (%d/%d replicas)", name, availableReplicas, replicas), false
 }
 
 func (m *ApplicationMonitor) resultWorker() {

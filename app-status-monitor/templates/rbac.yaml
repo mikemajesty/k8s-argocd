@@ -1,4 +1,3 @@
-# templates/rbac.yaml (APENAS isto)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -6,20 +5,11 @@ metadata:
   labels:
     {{- include "app-status-monitor.labels" . | nindent 4 }}
 rules:
-- apiGroups: ["apps"]
-  resources: ["deployments"]
-  verbs: ["get", "list", "watch"]
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get", "list", "watch"]
 - apiGroups: ["kafka.crossplane.io"]
   resources: ["kafkatopics"]
   verbs: ["get", "list", "watch"]
-- apiGroups: ["database.crossplane.io"]
-  resources: ["postgresqlinstances"]
-  verbs: ["get", "list", "watch"]
-- apiGroups: ["cache.crossplane.io"]
-  resources: ["redisclusters"]
+- apiGroups: ["aws.database.crossplane.io"]
+  resources: ["rdsinstances"]
   verbs: ["get", "list", "watch"]
 - apiGroups: [""]
   resources: ["configmaps"]

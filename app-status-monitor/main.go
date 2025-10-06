@@ -31,7 +31,7 @@ func main() {
 
 	// 🚀 Cria o monitor
 	monitorConfig := &config.AppConfig{
-		WatchInterval: 30 * time.Second, // Para compatibilidade
+		WatchInterval: 30 * time.Second,
 	}
 
 	appMonitor, err := monitor.NewApplicationMonitor(monitorConfig)
@@ -39,11 +39,10 @@ func main() {
 		log.Fatalf("❌ Failed to create application monitor: %v", err)
 	}
 
-	log.Printf("🚀 Starting Application Monitor")
+	log.Printf("🚀 Starting AWS Crossplane Monitor")
 	log.Printf("📡 Port: %s", appConfig.Port)
 	log.Printf("📊 Log Level: %s", appConfig.LogLevel)
 	log.Printf("⚡ Max Workers: %d", appConfig.MaxWorkers)
-	log.Printf("🌐 HTTP Timeout: %v", appConfig.HTTPTimeout)
 
 	// 🏥 Health check
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -55,14 +54,13 @@ func main() {
 		})
 	})
 
-	// 📊 Metrics endpoint (se habilitado)
+	// 📊 Metrics endpoint
 	if getEnvBool("ENABLE_METRICS", true) {
 		http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/plain")
-			// TODO: Implementar métricas Prometheus
-			fmt.Fprintf(w, "# HELP app_monitor_active_sessions Current active monitoring sessions\n")
-			fmt.Fprintf(w, "# TYPE app_monitor_active_sessions gauge\n")
-			fmt.Fprintf(w, "app_monitor_active_sessions 0\n")
+			fmt.Fprintf(w, "# HELP aws_monitor_active_sessions Current active monitoring sessions\n")
+			fmt.Fprintf(w, "# TYPE aws_monitor_active_sessions gauge\n")
+			fmt.Fprintf(w, "aws_monitor_active_sessions 0\n")
 		})
 		log.Printf("📈 Metrics endpoint enabled at /metrics")
 	}
@@ -118,7 +116,7 @@ func main() {
 			return
 		}
 
-		// ⏱️ Parse timeout com valores padrão inteligentes
+		// ⏱️ Parse timeout
 		timeout, err := time.ParseDuration(req.Timeout)
 		if err != nil || timeout == 0 {
 			timeout = getDefaultTimeout(req.Type)
@@ -133,7 +131,6 @@ func main() {
 			userContext["webhookUrl"] = req.WebhookURL
 		}
 
-		// Adiciona metadados ao userContext
 		userContext["requestTimestamp"] = time.Now().Format(time.RFC3339)
 		userContext["timeout"] = timeout.String()
 
@@ -153,6 +150,7 @@ func main() {
 			},
 		}
 
+		// ✅ CORREÇÃO: context.Background() em vez de r.Context()
 		sessionID, err := appMonitor.StartMonitoring(context.Background(), monitorReq)
 		if err != nil {
 			log.Printf("❌ Failed to start monitoring: %v", err)
@@ -167,7 +165,7 @@ func main() {
 			"cluster":   req.ClusterName,
 			"namespace": req.Namespace,
 			"timeout":   timeout.String(),
-			"method":    "watch", // Indica que está usando Watch
+			"method":    "watch",
 			"timestamp": time.Now().Format(time.RFC3339),
 		}
 
@@ -205,7 +203,6 @@ func main() {
 	// 📋 Status das sessões ativas
 	http.HandleFunc("/api/monitor/sessions", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		// TODO: Implementar listagem de sessões ativas
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"activeSessions": 0,
 			"timestamp":      time.Now().Format(time.RFC3339),
@@ -221,9 +218,13 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"name":        "Application Monitor API",
+			"name":        "AWS Crossplane Monitor API",
 			"version":     "1.0.0",
-			"description": "Kubernetes resource monitoring with Watch support",
+			"description": "AWS RDS + Kafka monitoring with Crossplane Watch support",
+			"supportedResources": []string{
+				"RDSInstance (aws.database.crossplane.io)",
+				"KafkaTopic (kafka.crossplane.io)",
+			},
 			"endpoints": map[string]string{
 				"health":           "GET  /health",
 				"start_monitoring": "POST /api/monitor/start",
@@ -251,7 +252,7 @@ func main() {
 	}
 }
 
-// 🎯 Carrega configuração from environment variables
+// 🎯 Carrega configuração
 func loadConfig() *AppConfig {
 	config := &AppConfig{
 		Port:        getEnv("PORT", "8080"),
@@ -263,34 +264,28 @@ func loadConfig() *AppConfig {
 	return config
 }
 
-// 📊 Configura o logger baseado nas envs
+// 📊 Configura o logger
 func setupLogger(config *AppConfig) {
-	log.SetFlags(0) // Remove flags padrão
+	log.SetFlags(0)
 
 	if config.LogFormat == "json" {
-		// TODO: Implementar logger JSON structured
 		log.SetFlags(log.LstdFlags)
 	} else {
 		log.SetFlags(log.LstdFlags | log.Lshortfile)
 	}
 
-	// Log level seria implementado com um logger mais avançado
 	log.Printf("🔧 Logger configured - Level: %s, Format: %s", config.LogLevel, config.LogFormat)
 }
 
-// ⏱️ Retorna timeout padrão baseado no tipo de recurso
+// ⏱️ Retorna timeout padrão para AWS
 func getDefaultTimeout(resourceType string) time.Duration {
 	switch resourceType {
 	case "kafkatopic":
 		return getEnvDuration("DEFAULT_TIMEOUT_KAFKA", 20*time.Minute)
-	case "deployment":
-		return getEnvDuration("DEFAULT_TIMEOUT_DEPLOYMENT", 10*time.Minute)
-	case "postgresqlinstance", "mysqlinstance":
-		return getEnvDuration("DEFAULT_TIMEOUT_DATABASE", 25*time.Minute)
-	case "rediscluster":
-		return getEnvDuration("DEFAULT_TIMEOUT_REDIS", 15*time.Minute)
+	case "rdsinstance":
+		return getEnvDuration("DEFAULT_TIMEOUT_RDS", 40*time.Minute) // RDS leva mais tempo
 	default:
-		return 15 * time.Minute
+		return 30 * time.Minute
 	}
 }
 
@@ -299,7 +294,7 @@ func generateID() string {
 	return fmt.Sprintf("mon-%d", time.Now().UnixNano())
 }
 
-// 🔧 Helper functions para environment variables
+// 🔧 Helper functions
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
